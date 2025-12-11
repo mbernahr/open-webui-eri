@@ -3,6 +3,7 @@
 	import { toast } from 'svelte-sonner';
 	import { v4 as uuidv4 } from 'uuid';
 	import { PaneGroup, Pane, PaneResizer } from 'paneforge';
+	import type { EriConfig } from '$lib/types';
 
 	import { onMount, getContext, onDestroy, tick } from 'svelte';
 	const i18n = getContext('i18n');
@@ -55,6 +56,7 @@
 	import DropdownOptions from '$lib/components/common/DropdownOptions.svelte';
 	import Pagination from '$lib/components/common/Pagination.svelte';
 	import AttachWebpageModal from '$lib/components/chat/MessageInput/AttachWebpageModal.svelte';
+	import EriSetupPanel from './EriSetupPanel.svelte';
 
 	let largeScreen = true;
 
@@ -68,13 +70,15 @@
 	let showAccessControlModal = false;
 
 	let minSize = 0;
-	type Knowledge = {
-		id: string;
-		name: string;
-		description: string;
-		data: {
-			file_ids: string[];
-		};
+		type Knowledge = {
+			id: string;
+			name: string;
+			description: string;
+			data: {
+				file_ids: string[];
+				data_source?: 'local' | 'eri';
+				eri_config?: EriConfig;
+			};
 		files: any[];
 		access_grants?: any[];
 		write_access?: boolean;
@@ -99,7 +103,34 @@
 
 	let currentPage = 1;
 	let fileItems = null;
-	let fileItemsTotal = null;
+		let fileItemsTotal = null;
+		let showEriSetup = false;
+		let isEri = false;
+		let lastEriSecret: any = null;
+		let eriCfg: EriConfig = {
+			host: '',
+			port: 0,
+			authMethod: '',
+			token: '',
+			dataSource: '',
+			retrievalMethod: ''
+		};
+
+		const hydrateEriFromKnowledge = (knowledgeItem: Knowledge) => {
+			const source = (knowledgeItem?.data?.data_source ?? 'local').toLowerCase();
+			isEri = source === 'eri';
+			const cfg = knowledgeItem?.data?.eri_config;
+			if (cfg) {
+				eriCfg = {
+					host: cfg.host ?? '',
+					port: Number(cfg.port ?? 0),
+					authMethod: cfg.authMethod ?? '',
+					token: cfg.token ?? '',
+					dataSource: cfg.dataSource ?? '',
+					retrievalMethod: cfg.retrievalMethod ?? ''
+				};
+			}
+		};
 
 	const reset = () => {
 		currentPage = 1;
@@ -651,11 +682,16 @@
 		dragged = false;
 	};
 
-	const onDrop = async (e) => {
-		e.preventDefault();
-		dragged = false;
+		const onDrop = async (e) => {
+			e.preventDefault();
+			dragged = false;
 
-		if (!knowledge?.write_access) {
+			if (isEri) {
+				toast.info($i18n.t('This knowledge uses ERI. Local uploads are disabled.'));
+				return;
+			}
+
+			if (!knowledge?.write_access) {
 			toast.error($i18n.t('You do not have permission to upload files to this knowledge base.'));
 			return;
 		}
@@ -746,14 +782,15 @@
 			return null;
 		});
 
-		if (res) {
-			knowledge = res;
-			if (!Array.isArray(knowledge?.access_grants)) {
-				knowledge.access_grants = [];
-			}
-			knowledgeId = knowledge?.id;
-		} else {
-			goto('/workspace/knowledge');
+			if (res) {
+				knowledge = res;
+				if (!Array.isArray(knowledge?.access_grants)) {
+					knowledge.access_grants = [];
+				}
+				hydrateEriFromKnowledge(knowledge);
+				knowledgeId = knowledge?.id;
+			} else {
+				goto('/workspace/knowledge');
 		}
 
 		const dropZone = document.querySelector('body');
@@ -771,14 +808,46 @@
 		dropZone?.removeEventListener('dragleave', onDragLeave);
 	});
 
-	const decodeString = (str: string) => {
+		const decodeString = (str: string) => {
 		try {
 			return decodeURIComponent(str);
 		} catch (e) {
 			return str;
 		}
-	};
-</script>
+		};
+
+		const onEriFinish = async () => {
+			const updated = await updateKnowledgeById(localStorage.token, id, {
+				name: knowledge?.name,
+				description: knowledge?.description,
+				data: {
+					...(knowledge?.data ?? {}),
+					data_source: 'eri',
+					eri_config: { ...eriCfg }
+				}
+			}).catch((e) => {
+				toast.error(`${e}`);
+				return null;
+			});
+
+			if (updated) {
+				if (lastEriSecret) {
+					await fetch(`/api/v1/knowledge/${id}/eri/credentials`, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							Authorization: `Bearer ${localStorage.token}`
+						},
+						body: JSON.stringify(lastEriSecret)
+					}).catch(() => {});
+				}
+				knowledge = updated;
+				hydrateEriFromKnowledge(knowledge);
+				showEriSetup = false;
+				toast.success($i18n.t('ERI configuration updated.'));
+			}
+		};
+	</script>
 
 <FilesOverlay show={dragged} />
 <SyncConfirmDialog
@@ -875,11 +944,20 @@
 							</div>
 						</div>
 
-						{#if knowledge?.write_access}
-							<div class="self-center shrink-0">
-								<button
-									class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
-									type="button"
+							{#if knowledge?.write_access}
+								<div class="self-center shrink-0 flex items-center gap-2">
+									<button
+										class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full text-xs"
+										type="button"
+										on:click={() => {
+											showEriSetup = true;
+										}}
+									>
+										{isEri ? 'ERI' : 'Local'}
+									</button>
+									<button
+										class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
+										type="button"
 									on:click={() => {
 										showAccessControlModal = true;
 									}}
@@ -914,11 +992,28 @@
 			</div>
 		</div>
 
-		<div
-			class="mt-2 mb-2.5 py-2 -mx-0 bg-white dark:bg-gray-900 rounded-3xl border border-gray-100/30 dark:border-gray-850/30 flex-1"
-		>
-			<div class="px-3.5 flex flex-1 items-center w-full space-x-2 py-0.5 pb-2">
-				<div class="flex flex-1 items-center">
+			{#if showEriSetup}
+				<div class="mt-2 mb-2.5 py-2 -mx-0 bg-white dark:bg-gray-900 rounded-3xl border border-gray-100/30 dark:border-gray-850/30 flex-1">
+					<EriSetupPanel
+						knowledgeId={id}
+						bind:host={eriCfg.host}
+						bind:port={eriCfg.port}
+						bind:authMethod={eriCfg.authMethod}
+						bind:token={eriCfg.token}
+						bind:selectedSource={eriCfg.dataSource}
+						bind:selectedMethod={eriCfg.retrievalMethod}
+						on:finish={(e) => {
+							lastEriSecret = e.detail?.secret ?? null;
+							onEriFinish();
+						}}
+					/>
+				</div>
+			{:else}
+				<div
+					class="mt-2 mb-2.5 py-2 -mx-0 bg-white dark:bg-gray-900 rounded-3xl border border-gray-100/30 dark:border-gray-850/30 flex-1"
+				>
+				<div class="px-3.5 flex flex-1 items-center w-full space-x-2 py-0.5 pb-2">
+					<div class="flex flex-1 items-center">
 					<div class=" self-center ml-1 mr-3">
 						<Search className="size-3.5" />
 					</div>
@@ -931,9 +1026,9 @@
 						}}
 					/>
 
-					{#if knowledge?.write_access}
-						<div>
-							<AddContentMenu
+						{#if knowledge?.write_access && !isEri}
+							<div>
+								<AddContentMenu
 								onUpload={(data) => {
 									if (data.type === 'directory') {
 										uploadDirectoryHandler();
@@ -1010,8 +1105,8 @@
 				</div>
 			</div>
 
-			{#if fileItems !== null && fileItemsTotal !== null}
-				<div class="flex flex-row flex-1 gap-3 px-2.5 mt-2">
+				{#if fileItems !== null && fileItemsTotal !== null}
+					<div class="flex flex-row flex-1 gap-3 px-2.5 mt-2">
 					<div class="flex-1 flex">
 						<div class=" flex flex-col w-full space-x-2 rounded-lg h-full">
 							<div class="w-full h-full flex flex-col min-h-full">
@@ -1045,12 +1140,14 @@
 									{#if fileItemsTotal > 30}
 										<Pagination bind:page={currentPage} count={fileItemsTotal} perPage={30} />
 									{/if}
-								{:else}
-									<div class="my-3 flex flex-col justify-center text-center text-gray-500 text-xs">
-										<div>
-											{$i18n.t('No content found')}
+									{:else}
+										<div class="my-3 flex flex-col justify-center text-center text-gray-500 text-xs">
+											<div>
+												{isEri
+													? $i18n.t('ERI knowledge uses external retrieval.')
+													: $i18n.t('No content found')}
+											</div>
 										</div>
-									</div>
 								{/if}
 							</div>
 						</div>
@@ -1116,13 +1213,14 @@
 						</Drawer>
 					{/if}
 				</div>
-			{:else}
-				<div class="my-10">
-					<Spinner className="size-4" />
+				{:else}
+					<div class="my-10">
+						<Spinner className="size-4" />
+					</div>
+				{/if}
 				</div>
 			{/if}
-		</div>
-	{:else}
-		<Spinner className="size-5" />
-	{/if}
+		{:else}
+			<Spinner className="size-5" />
+		{/if}
 </div>

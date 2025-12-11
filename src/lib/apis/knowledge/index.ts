@@ -1,12 +1,24 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
+import type { EriConfig } from '$lib/types';
 
 export const createNewKnowledge = async (
 	token: string,
 	name: string,
 	description: string,
-	accessGrants: object[]
+	accessGrants: object[],
+	data: {
+		data_source: 'local' | 'eri';
+		eri_config?: EriConfig;
+	} = { data_source: 'local' }
 ) => {
 	let error = null;
+
+	const body: any = {
+		name,
+		description,
+		access_grants: accessGrants,
+		data
+	};
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/create`, {
 		method: 'POST',
@@ -15,12 +27,8 @@ export const createNewKnowledge = async (
 			'Content-Type': 'application/json',
 			authorization: `Bearer ${token}`
 		},
-		body: JSON.stringify({
-			name: name,
-			description: description,
-			access_grants: accessGrants
+		body: JSON.stringify(body)
 		})
-	})
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();
 			return res.json();
@@ -244,10 +252,13 @@ export const searchKnowledgeFilesById = async (
 	return res;
 };
 
-type KnowledgeUpdateForm = {
+export type KnowledgeUpdateForm = {
 	name?: string;
 	description?: string;
-	data?: object;
+	data?: {
+		data_source?: 'local' | 'eri';
+		eri_config?: EriConfig | null;
+	};
 	access_grants?: object[];
 };
 
@@ -544,3 +555,54 @@ export const exportKnowledgeById = async (token: string, id: string) => {
 
 	return res;
 };
+export type EriRetrievalRequest = {
+	latestUserPrompt: string;
+	latestUserPromptType?: string;
+	thread: Record<string, unknown>;
+	retrievalProcessId?: string;
+	parameters?: Record<string, unknown>
+	maxMatches?: number;
+};
+
+export async function eriQuery(
+	token: string,
+	config: EriConfig,
+	request: Omit<EriRetrievalRequest, 'parameters'>
+) {
+	const body = {
+		eriConfig: {
+			...config,
+			query: request.latestUserPrompt
+		},
+		request: {
+			latestUserPrompt: request.latestUserPrompt,
+			latestUserPromptType: request.latestUserPromptType ?? 'NONE',
+			thread: request.thread ?? {
+				contentBlocks: []
+			},
+			retrievalProcessId: request.retrievalProcessId ?? crypto.randomUUID(),
+
+			parameters: {
+				dataSource: config.dataSource,
+				retrievalMethod: config.retrievalMethod
+			},
+			maxMatches: request.maxMatches ?? 0
+		}
+	};
+
+	console.log('Body ->', body);
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/retrieval/eri/query`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify(body)
+	});
+
+	if (!res.ok) {
+		throw new Error(await res.text());
+	}
+	return res.json();
+}

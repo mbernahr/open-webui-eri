@@ -8,6 +8,7 @@
 		chatId,
 		config,
 		mobile,
+		selectedKnowledgeBase,
 		settings,
 		showArchivedChats,
 		showControls,
@@ -16,12 +17,15 @@
 		user
 	} from '$lib/stores';
 
+	import { getKnowledgeById } from '$lib/apis/knowledge';
+
 	import { slide } from 'svelte/transition';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 
 	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import ModelSelector from '../chat/ModelSelector.svelte';
+	import KnowledgeSelector from '../chat/KnowledgeSelector.svelte'
 	import Tooltip from '../common/Tooltip.svelte';
 	import Menu from '$lib/components/layout/Navbar/Menu.svelte';
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
@@ -51,6 +55,8 @@
 	export let selectedModels;
 	export let showModelSelector = true;
 
+	export let selectedKnowledges;
+
 	export let onSaveTempChat: () => {};
 	export let archiveChatHandler: (id: string) => void;
 	export let moveChatHandler: (id: string, folderId: string) => void;
@@ -59,7 +65,29 @@
 
 	let showShareChatModal = false;
 	let showDownloadChatModal = false;
-</script>
+
+
+$: (async () => {
+        const ids = (selectedKnowledges ?? []).filter(Boolean);
+
+        if (ids.length === 0) {
+            selectedKnowledgeBase.set(null);
+            return;
+        }
+
+        const fullList = await Promise.all(
+            ids.map(async (id) => {
+                const kb = await getKnowledgeById(localStorage.token, id).catch(() => null);
+                if (kb) {
+                    return { ...kb, type: 'collection' };
+                }
+                return null;
+            })
+        );
+
+        selectedKnowledgeBase.set(fullList.filter(Boolean));
+    })();
+	</script>
 
 <ShareChatModal bind:show={showShareChatModal} chatId={$chatId} />
 
@@ -111,9 +139,16 @@
 			{$showSidebar ? 'ml-1' : ''}
 			"
 				>
-					{#if showModelSelector}
-						<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
-					{/if}
+				{#if showModelSelector}
+					<div class="flex items-start gap-2 mt-[2px]">
+						<div class="flex-shrink-0">
+							<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
+						</div>
+						<div class="flex-shrink-0">
+							<KnowledgeSelector bind:selectedKnowledges />
+						</div>
+					</div>
+				{/if}
 				</div>
 
 				<div class="self-start flex flex-none items-center text-gray-600 dark:text-gray-400">
@@ -176,6 +211,8 @@
 									? 'md:hidden'
 									: ''} cursor-pointer px-2 py-2 rounded-xl text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-850 transition"
 								on:click={() => {
+									selectedKnowledges = [''];
+									selectedKnowledgeBase.set(null);
 									initNewChat();
 								}}
 								aria-label="New Chat"
@@ -221,6 +258,25 @@
 							>
 								<div class=" m-auto self-center">
 									<Knobs className=" size-5" strokeWidth="1" />
+								</div>
+							</button>
+						</Tooltip>
+						
+						<Tooltip content={$i18n.t('New Chat')}>
+							<button
+								id="new-chat-button"
+								class=" flex {$showSidebar
+									? 'md:hidden'
+									: ''} cursor-pointer px-2 py-2 rounded-xl text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-850 transition"
+								on:click={() => {
+									selectedKnowledges = [''];
+									selectedKnowledgeBase.set(null);
+									initNewChat();
+								}}
+								aria-label="New Chat"
+							>
+								<div class=" m-auto self-center">
+									<PencilSquare className=" size-5" strokeWidth="2" />
 								</div>
 							</button>
 						</Tooltip>

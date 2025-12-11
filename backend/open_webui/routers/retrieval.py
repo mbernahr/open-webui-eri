@@ -45,6 +45,9 @@ from sqlalchemy.orm import Session
 
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 
+# ERI
+from open_webui.retrieval.eri import query_eri_if_applicable, eri_query, EriQueryForm
+
 # Document loaders
 from open_webui.retrieval.loaders.main import Loader
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
@@ -2478,6 +2481,15 @@ async def query_doc_handler(
     user=Depends(get_verified_user),
 ):
     try:
+        # ERI ----------------------
+        eri_res = await query_eri_if_applicable(
+            form_data.collection_name,
+            form_data.query,
+            form_data.k if form_data.k is not None else 0,
+        )
+        if eri_res:
+            return eri_res
+        # --------------------------
         if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH and (
             form_data.hybrid is None or form_data.hybrid
         ):
@@ -2543,6 +2555,7 @@ class QueryCollectionsForm(BaseModel):
     hybrid: Optional[bool] = None
     hybrid_bm25_weight: Optional[float] = None
     enable_enriched_texts: Optional[bool] = None
+    collection_ids: Optional[list[str]] = None
 
 
 @router.post("/query/collection")
@@ -2552,6 +2565,18 @@ async def query_collection_handler(
     user=Depends(get_verified_user),
 ):
     try:
+        # ERI ----------------------
+        eri_key = (
+            form_data.collection_ids[0] if form_data.collection_ids else None
+        ) or form_data.collection_names[0]
+        eri_res = await query_eri_if_applicable(
+            eri_key,
+            form_data.query,
+            form_data.k if form_data.k is not None else 0,
+        )
+        if eri_res:
+            return eri_res
+        # --------------------------
         if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH and (
             form_data.hybrid is None or form_data.hybrid
         ):
@@ -2739,6 +2764,7 @@ async def process_files_batch(
                         "created_by": file.user_id,
                         "file_id": file.id,
                         "source": file.filename,
+                        "hash": calculate_sha256_string(text_content),
                     },
                 )
             ]
@@ -2791,3 +2817,9 @@ async def process_files_batch(
                 )
 
     return BatchProcessFilesResponse(results=file_results, errors=file_errors)
+
+
+# ERI ----------------------
+@router.post("/eri/query")
+async def eri_query_endpoint(form: EriQueryForm):
+    return await eri_query(form)
