@@ -42,6 +42,10 @@ class Knowledge(Base):
     name = Column(Text)
     description = Column(Text)
 
+    # ERI ----------------------
+    eri_secret = Column(JSON, nullable=True)
+    # --------------------------
+    data = Column(JSON, nullable=True)
     meta = Column(JSON, nullable=True)
     access_control = Column(JSON, nullable=True)  # Controls data access levels.
     # Defines access control rules for this entry.
@@ -73,12 +77,25 @@ class KnowledgeModel(BaseModel):
     name: str
     description: str
 
+    data: Optional[dict] = None
     meta: Optional[dict] = None
 
     access_control: Optional[dict] = None
 
     created_at: int  # timestamp in epoch
     updated_at: int  # timestamp in epoch
+
+
+####################
+# ERI
+####################
+class EriConfig(BaseModel):
+    host: str
+    port: int
+    authMethod: str
+    token: str
+    dataSource: str
+    retrievalMethod: str
 
 
 class KnowledgeFile(Base):
@@ -133,6 +150,7 @@ class KnowledgeForm(BaseModel):
     name: str
     description: str
     access_control: Optional[dict] = None
+    data: Optional[dict] = None
 
 
 class KnowledgeTable:
@@ -145,6 +163,9 @@ class KnowledgeTable:
                     **form_data.model_dump(),
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
+                    # ERI ----------------------
+                    "data": form_data.data,
+                    # --------------------------
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
                 }
@@ -365,6 +386,28 @@ class KnowledgeTable:
                 return True
             except Exception:
                 return False
+
+    def update_knowledge_eri_secret_by_id(self, id: str, secret: dict | None):
+        try:
+            with get_db() as db:
+                db.query(Knowledge).filter_by(id=id).update(
+                    {
+                        "eri_secret": secret,
+                        "updated_at": int(time.time()),
+                    }
+                )
+                db.commit()
+                return True
+        except Exception as e:
+            log.exception(e)
+            return False
+
+    def get_knowledge_with_secret_by_id(self, id: str) -> Optional[Knowledge]:
+        try:
+            with get_db() as db:
+                return db.query(Knowledge).filter_by(id=id).first()
+        except Exception:
+            return None
 
 
 Knowledges = KnowledgeTable()

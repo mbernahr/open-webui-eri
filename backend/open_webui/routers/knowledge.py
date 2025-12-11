@@ -29,6 +29,7 @@ from open_webui.env import SRC_LOG_LEVELS
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL
 from open_webui.models.models import Models, ModelForm
 
+from open_webui.retrieval.eri import force_eri_reauth_for_knowledge
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -659,3 +660,58 @@ async def add_files_to_knowledge_batch(
         **knowledge.model_dump(),
         files=Knowledges.get_file_metadatas_by_id(knowledge.id),
     )
+
+
+############################
+# ERI
+############################
+
+
+class EriCredentialForm(BaseModel):
+    authMethod: str
+    access_token: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+@router.post("/{id}/eri/credentials", response_model=bool)
+async def set_eri_credentials(
+    id: str, form: EriCredentialForm, user=Depends(get_verified_user)
+):
+    knowledge = Knowledges.get_knowledge_by_id(id=id)
+    if not knowledge:
+        raise HTTPException(status_code=404, detail="Knowledge not found.")
+
+    secret: dict = {"authMethod": form.authMethod}
+    if form.authMethod == "TOKEN" and form.access_token:
+        secret["access_token"] = form.access_token
+    elif form.authMethod == "USERNAME_PASSWORD":
+        secret["username"] = form.username
+        secret["password"] = form.password
+
+    ok = Knowledges.update_knowledge_eri_secret_by_id(id, secret)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to store ERI credentials.")
+
+    return True
+
+
+@router.post("/{id}/eri/ensure", response_model=KnowledgeFilesResponse)
+async def ensure_eri_connection(id: str):
+    knowledge = Knowledges.get_knowledge_with_secret_by_id(id)
+    if not knowledge:
+        raise HTTPException(status_code=404, detail="Knowledge not found.")
+
+    knowledge_model = Knowledges.get_knowledge_by_id(id)
+    if not knowledge_model:
+        raise HTTPException(status_code=404, detail="Knowledge not found.")
+
+    data = knowledge.data or {}
+    if (data.get("data_source") or "").lower() == "eri":
+        knowledge = force_eri_reauth_for_knowledge(knowledge)
+
+    knowledge_model = Knowledges.get_knowledge_by_id(id)
+    file_ids = knowledge_model.data.get("file_ids", []) if knowledge_model.data else []
+    files = Files.get_file_metadatas_by_ids(file_ids)
+
+    return KnowledgeFilesResponse(**knowledge_model.model_dump(), files=files)

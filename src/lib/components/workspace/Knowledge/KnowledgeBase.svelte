@@ -3,6 +3,7 @@
 	import { toast } from 'svelte-sonner';
 	import { v4 as uuidv4 } from 'uuid';
 	import { PaneGroup, Pane, PaneResizer } from 'paneforge';
+	import type { KnowledgeUpdateForm } from '$lib/apis/knowledge';
 
 	import { onMount, getContext, onDestroy, tick } from 'svelte';
 	const i18n = getContext('i18n');
@@ -52,6 +53,31 @@
 	import Search from '$lib/components/icons/Search.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import FilesOverlay from '$lib/components/chat/MessageInput/FilesOverlay.svelte';
+	import EriSetupPanel from './EriSetupPanel.svelte';
+
+	// ERI UI-State
+	let isEri = false;
+	let showEriSetup = false;
+
+	type EriCfg = {
+		host: string;
+		port: number;
+		authMethod: string;
+		token: string;
+		dataSource: string;
+		retrievalMethod: string;
+	};
+
+	let eriCfg: EriCfg = {
+		host: '',
+		port: 0,
+		authMethod: '',
+		token: '',
+		dataSource: '',
+		retrievalMethod: '',
+	};
+
+	let lastEriSecret: any = null;
 
 	let largeScreen = true;
 
@@ -69,7 +95,7 @@
 		files: any[];
 	};
 
-	let id = null;
+	let id:string = "";
 	let knowledge: Knowledge | null = null;
 	let query = '';
 
@@ -390,6 +416,9 @@
 
 			if (res) {
 				knowledge = res;
+				hydrateEriFromKnowledge(knowledge);
+				if (isEri && $page.url.searchParams.get('editEri') === '1') showEriSetup = true;
+				if (isEri) lazyFillEriMeta();
 				toast.success($i18n.t('Knowledge reset successfully.'));
 
 				// Upload directory
@@ -410,6 +439,7 @@
 
 		if (updatedKnowledge) {
 			knowledge = updatedKnowledge;
+			hydrateEriFromKnowledge(knowledge);
 			toast.success($i18n.t('File added successfully.'));
 		} else {
 			toast.error($i18n.t('Failed to add file.'));
@@ -428,6 +458,7 @@
 
 			if (updatedKnowledge) {
 				knowledge = updatedKnowledge;
+				hydrateEriFromKnowledge(knowledge);
 				toast.success($i18n.t('File removed successfully.'));
 			}
 		} catch (e) {
@@ -461,6 +492,7 @@
 			});
 			if (res && updatedKnowledge) {
 				knowledge = updatedKnowledge;
+				hydrateEriFromKnowledge(knowledge);
 				toast.success($i18n.t('File content updated successfully.'));
 			}
 		} finally {
@@ -626,7 +658,7 @@
 			pane.expand();
 		}
 
-		id = $page.params.id;
+		id = $page.params.id as string;
 
 		const res = await getKnowledgeById(localStorage.token, id).catch((e) => {
 			toast.error(`${e}`);
@@ -635,6 +667,8 @@
 
 		if (res) {
 			knowledge = res;
+			hydrateEriFromKnowledge(knowledge);
+			if (isEri) lazyFillEriMeta();
 		} else {
 			goto('/workspace/knowledge');
 		}
@@ -660,6 +694,119 @@
 			return str;
 		}
 	};
+	function hydrateEriFromKnowledge(k: any) {
+		const raw = k ?? {};
+		const cfg = 
+			raw?.data?.eri_config ??
+			raw?.eri_config ??
+			null;
+
+		const dataSrc = 
+			raw?.data?.data_source ??
+			raw?.data_source ??
+			(cfg ? 'eri' : undefined);
+
+		isEri = String(dataSrc || '').toLowerCase() === 'eri';
+
+		if (isEri && cfg) {
+			eriCfg = {
+				host: cfg.host ?? '',
+				port: Number(cfg.port ?? 0),
+				authMethod: cfg.authMethod ?? '',
+				token: cfg.token ?? '',
+				dataSource: cfg.dataSource ?? cfg.source ?? '',
+				retrievalMethod: cfg.retrievalMethod ?? '',
+			};
+		} else {
+			eriCfg = { host: '', port: 0, authMethod: '', token: '', dataSource: '', retrievalMethod: '' };
+		}
+	}
+
+	let _eriFillOnce = false;
+	async function lazyFillEriMeta() {
+		if (_eriFillOnce) return;
+		if (!isEri || !eriCfg?.token) return;
+		const host = (eriCfg.host || '').replace(/\/$/, '');
+		const base = host ? host + (eriCfg.port ? ':' + eriCfg.port : '') : '';
+		if (!/^https?:\/\//.test(base)) return;
+		try {
+			if (!eriCfg.dataSource) {
+				const r = await fetch(`${base}/dataSource`, { headers: { 
+					Authorization: `Bearer ${eriCfg.token}`,
+					token: eriCfg.token 
+				} });
+				if (r.ok) {
+					const ds = await r.json();
+					eriCfg.dataSource = ds?.name || '';
+				}
+			}
+
+			if (!eriCfg.retrievalMethod) {
+				const r2 = await fetch(`${base}/retrieval/info`, { headers: { token: eriCfg.token } });
+				if (r2.ok) {
+					const list = await r2.json();
+					if (Array.isArray(list) && list[0]?.name) eriCfg.retrievalMethod = list[0].name;
+				}
+			}
+			_eriFillOnce = true;
+			await updateKnowledgeById(localStorage.token, id, {
+				data: {
+					...(knowledge?.data ?? {}),
+					data_source: 'eri',
+					eri_config: {
+						host: eriCfg.host,
+						port: eriCfg.port,
+						authMethod: eriCfg.authMethod,
+						token: eriCfg.token,
+						dataSource: eriCfg.dataSource,
+						retrievalMethod: eriCfg.retrievalMethod,
+					}
+				}
+			}).catch(() => {});
+		} catch {}
+	}
+
+	$: if (isEri && eriCfg?.token && (!eriCfg.dataSource || !eriCfg.retrievalMethod)) {
+		lazyFillEriMeta();
+	}
+
+	async function onEriFinish() {
+		const patch: KnowledgeUpdateForm = {
+			name: knowledge?.name,
+			description: knowledge?.description,
+			data: {
+				data_source: "eri",
+				eri_config: {
+							host:eriCfg.host,
+							port: eriCfg.port,
+							authMethod: eriCfg.authMethod,
+							token: eriCfg.token,
+							dataSource: eriCfg.dataSource,
+							retrievalMethod: eriCfg.retrievalMethod,
+						}
+					},
+		};
+
+		const updated = await updateKnowledgeById(localStorage.token, id, patch)
+			.catch((e) => toast.error(`${e}`));
+
+		if (updated) {
+			if (lastEriSecret) {
+				await fetch(`/api/v1/knowledge/${id}/eri/credentials`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Bearer ${localStorage.token}`
+					},
+					body: JSON.stringify(lastEriSecret)
+				}).catch(() => {});
+			}
+			knowledge = updated;
+			hydrateEriFromKnowledge(knowledge);
+			toast.success($i18n.t('ERI configuration updated.'));
+			showEriSetup = false;
+		}
+	}
 </script>
 
 <FilesOverlay show={dragged} />
@@ -766,7 +913,29 @@
 		</div>
 
 		<div class="flex flex-row flex-1 h-full max-h-full pb-2.5 gap-3">
-			{#if largeScreen}
+			{#if isEri && !selectedFile && !showEriSetup}
+			    <div class="flex-1 flex items-center justify-center">
+				    <div class="p-4 max-w-lg w-full rounded-2xl shadow-sm">
+				    	<div class="text-lg font-semibold mb-2 text-gray-700">External Retrieval Interface</div>
+				        <div class="text-sm text-gray-700 dark:text-gray-300 space-y-1.5">
+				        	<div><b>Host:</b> {eriCfg.host}{eriCfg.port ? `:${eriCfg.port}` : ''}</div>
+				          	<div><b>Data Source:</b> {eriCfg.dataSource || '—'}</div>
+				          	<div><b>Retrieval Method:</b> {eriCfg.retrievalMethod || '—'}</div>
+				          	{#if eriCfg.token}
+				            	<div class="text-xs mt-1 text-gray-600">Authenticated</div>
+				          	{/if}
+				        </div>
+				        <div class="mt-4 flex gap-2">
+				          <button
+				            class="px-3 py-1.5 rounded-lg bg-gray-900 text-white dark:bg-white dark:text-black text-sm"
+				            on:click={() => (showEriSetup = true)}
+				          >
+				            {$i18n.t('Edit settings')}
+				          </button>
+				        </div>
+				      </div>
+				    </div>
+			{:else if largeScreen}
 				<div class="flex-1 flex justify-start w-full h-full max-h-full">
 					{#if selectedFile}
 						<div class=" flex flex-col w-full">
@@ -824,6 +993,21 @@
 								{/key}
 							</div>
 						</div>
+						{:else if showEriSetup}
+						<EriSetupPanel
+							knowledgeId={id}
+							bind:host={eriCfg.host}
+							bind:port={eriCfg.port}
+							bind:authMethod={eriCfg.authMethod}
+							bind:token={eriCfg.token}
+							bind:selectedSource={eriCfg.dataSource}
+							bind:selectedMethod={eriCfg.retrievalMethod}
+							on:finish={(e) => {
+								lastEriSecret = e.detail?.secret ?? null;
+
+								onEriFinish();
+							}}
+						/>
 					{:else}
 						<div class="h-full flex w-full">
 							<div class="m-auto text-xs text-center text-gray-200 dark:text-gray-700">
@@ -936,6 +1120,33 @@
 							</div>
 						</div>
 
+						<div class="px-3 mt-1">
+							<div class="text-[11px] uppercase tracking-wide text-gray-500 mb-1">ERI</div>
+							{#if isEri}
+								<button
+									class="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
+									on:click={() => (showEriSetup = true)}
+								>
+									<div class="font-medium line-clamp-1">
+										{eriCfg.host}{eriCfg.port ? `:${eriCfg.port}` : ''}
+									</div>
+									<div class="text-[11px] text-gray-500 line-clamp-1">
+										{eriCfg.dataSource || '—'} · {eriCfg.retrievalMethod || '—'}
+									</div>
+									{#if eriCfg.token}
+										<div class="text-[11px] text-gray-500">Authenticated</div>
+									{/if}
+								</button>
+							{:else}
+								<button 
+									class="w-full text-xs px-2 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700"
+									on:click={() => (showEriSetup = true)}
+								>
+									{$i18n.t('Configure ERI')}
+								</button>
+							{/if}
+						</div>
+
 						{#if filteredItems.length > 0}
 							<div class=" flex overflow-y-auto h-full w-full scrollbar-hidden text-xs">
 								<Files
@@ -956,7 +1167,11 @@
 						{:else}
 							<div class="my-3 flex flex-col justify-center text-center text-gray-500 text-xs">
 								<div>
-									{$i18n.t('No content found')}
+									{#if isEri}
+										{$i18n.t('No local documents')}
+									{:else}
+									  {$i18n.t('No content found')}
+									{/if}
 								</div>
 							</div>
 						{/if}

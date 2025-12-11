@@ -13,7 +13,7 @@
 	import Database from '$lib/components/icons/Database.svelte';
 	import GlobeAlt from '$lib/components/icons/GlobeAlt.svelte';
 	import Youtube from '$lib/components/icons/Youtube.svelte';
-	import { folders } from '$lib/stores';
+	import { folders, selectedKnowledgeBase } from '$lib/stores';
 	import Folder from '$lib/components/icons/Folder.svelte';
 
 	const i18n = getContext('i18n');
@@ -202,8 +202,39 @@
 					? ' bg-gray-50 dark:bg-gray-800 dark:text-gray-100 selected-command-option-button'
 					: ''}"
 				type="button"
-				on:click={() => {
+				on:click={async () => {
 					console.log(item);
+					let full = null;
+
+					if (item.type === 'collection') {
+						try { 
+							full = await getKnowledgeById(localStorage.token, item.id);
+							selectedKnowledgeBase.set(full);
+							await tick();
+						} catch (e) {
+							console.error(e);
+						}
+					}
+
+					const isEri = 
+						item?.data?.data_source === 'eri' ||
+						full?.data?.data_source === 'eri' ||
+						item?.badge === 'ERI';
+
+					if (isEri) {
+						try {
+							const ensured = await fetch(`/api/v1/knowledge/${item.id}/eri/ensure`, {
+								method: 'POST',
+								headers: {
+									'Content-Type': 'application/json',
+									Authorization: `Bearer ${localStorage.token}`
+								}
+							}).then(r => r.json());
+							selectedKnowledgeBase.set(ensured);
+						} catch (e) {
+							console.error('ERI ensure failed', e);
+						}
+					}
 					onSelect({
 						type: 'knowledge',
 						data: item
@@ -240,6 +271,17 @@
 						</div>
 					</Tooltip>
 				</div>
+				{#if item?.type === 'collection'}
+					{#if item?.data?.data_source === 'eri'}
+					<div class="bg-blue-500/20 text-blue-700 dark:text-blue-300 dark:bg-blue-500/10 rounded px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+						Eri
+					</div>
+				{:else}
+					<div class="bg-green-500/20 text-green-700 dark:text-green-300 dark:bg-green-500/10 rounded px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+						Collection
+					</div>
+				{/if}
+			{/if}
 			</button>
 		{/if}
 	{/each}

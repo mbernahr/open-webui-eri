@@ -1197,7 +1197,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             if item.get("collection_name"):
                 knowledge_files.append(
                     {
-                        "id": item.get("collection_name"),
+                        "collection_name": item.get("collection_name"),
                         "name": item.get("name"),
                         "legacy": True,
                     }

@@ -18,6 +18,7 @@ from langchain_core.documents import Document
 
 from open_webui.config import VECTOR_DB
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
+from open_webui.retrieval.eri import is_eri_collection, query_eri_if_applicable
 
 
 from open_webui.models.users import UserModel
@@ -383,11 +384,16 @@ def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
 
 
 def get_all_items_from_collections(collection_names: list[str]) -> dict:
-    results = []
-
     for collection_name in collection_names:
         if collection_name:
             try:
+                # ERI ----------------------
+                if is_eri_collection(collection_name):
+                    log.info(
+                        f"Skipping ERI collection in full-context fetch: {collection_name}"
+                    )
+                    continue
+                # --------------------------
                 result = get_doc(collection_name=collection_name)
                 if result is not None:
                     results.append(result.model_dump())
@@ -395,7 +401,6 @@ def get_all_items_from_collections(collection_names: list[str]) -> dict:
                 log.exception(f"Error when querying the collection: {e}")
         else:
             pass
-
     return merge_get_results(results)
 
 
@@ -1081,6 +1086,7 @@ async def get_sources_from_items(
             ):
                 if (
                     item.get("context") == "full"
+                    or full_context
                     or request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL
                 ):
                     if knowledge_base and (
@@ -1088,24 +1094,55 @@ async def get_sources_from_items(
                         or knowledge_base.user_id == user.id
                         or has_access(user.id, "read", knowledge_base.access_control)
                     ):
-                        files = Knowledges.get_files_by_id(knowledge_base.id)
+                        # ERI ----------------------
+                        if (knowledge_base.data or {}).get("data_source") == "eri":
+                            collection_names.append(item["id"])
+                            query_result = None
+                            try:
+                                eri_query = (
+                                    queries[0] if queries else "overview / context"
+                                )
+                                log.debug(
+                                    f"Calling ERI for full context: {item['id'], eri_query, k}"
+                                )
+                                eri_ctx = await query_eri_if_applicable(
+                                    item["id"], eri_query, k
+                                )
+                                if eri_ctx:
+                                    query_result = eri_ctx
+                                    log.debug(
+                                        f"ERI full context successful for {item['id']}"
+                                    )
+                                else:
+                                    log.debug(
+                                        f"ERI full context returned no data for {item['id']}"
+                                    )
+                            except Exception as e:
+                                log.error(
+                                    f"ERI Full-context/bypass failed for {item['id']}: {e}",
+                                    exc_info=True,
+                                )
+                                query_result = None
+                        else:
+                            # --------------------------
+                            files = Knowledges.get_files_by_id(knowledge_base.id)
 
-                        documents = []
-                        metadatas = []
-                        for file in files:
-                            documents.append(file.data.get("content", ""))
-                            metadatas.append(
-                                {
-                                    "file_id": file.id,
-                                    "name": file.filename,
-                                    "source": file.filename,
-                                }
-                            )
+                            documents = []
+                            metadatas = []
+                            for file in files:
+                                documents.append(file.data.get("content", ""))
+                                metadatas.append(
+                                    {
+                                        "file_id": file.id,
+                                        "name": file.filename,
+                                        "source": file.filename,
+                                    }
+                                )
 
-                        query_result = {
-                            "documents": [documents],
-                            "metadatas": [metadatas],
-                        }
+                            query_result = {
+                                "documents": [documents],
+                                "metadatas": [metadatas],
+                            }
                 else:
                     # Fallback to collection names
                     if item.get("legacy"):
@@ -1119,6 +1156,10 @@ async def get_sources_from_items(
                 "documents": [[doc.get("content") for doc in item.get("docs")]],
                 "metadatas": [[doc.get("metadata") for doc in item.get("docs")]],
             }
+        # ERI ----------------------
+        elif (item.get("data") or {}).get("data_source") == "eri":
+            collection_names.append(item["id"])
+        # --------------------------
         elif item.get("collection_name"):
             # Direct Collection Name
             collection_names.append(item["collection_name"])
@@ -1158,13 +1199,68 @@ async def get_sources_from_items(
                             )
 
                     # fallback to non-hybrid search
+                    # ERI ----------------------
+                    if (not hybrid_search) and (query_result is None):
+                        try:
+                            if len(collection_names) == 1 and queries:
+                                key = list(collection_names)[0]
+                                kb_is_eri = is_eri_collection(key)
+
+                                if kb_is_eri:
+                                    log.debug(
+                                        f"Calling ERI for standard retrieval: {key} with query '{queries[0]}'"
+                                    )
+                                    try:
+                                        eri_ctx = await query_eri_if_applicable(
+                                            key, queries[0], k
+                                        )
+                                        if eri_ctx:
+                                            query_result = eri_ctx
+                                            log.debug(
+                                                f"ERI standard retrieval successful for {key}"
+                                            )
+                                        else:
+                                            log.debug(
+                                                f"ERI standard retrieval returned no data for {key}"
+                                            )
+                                    except Exception as e:
+                                        log.error(
+                                            f"ERI standard retrieval failed for {key}: {e}",
+                                            exc_info=True,
+                                        )
+                                        query_result = None
+
+                        except Exception as e:
+                            log.error(
+                                f"Error during ERI standard retrieval setup for {collection_names}: {e}",
+                                exc_info=True,
+                            )
+                            query_result = None
+                    # --------------------------
                     if not hybrid_search and query_result is None:
-                        query_result = await query_collection(
-                            collection_names=collection_names,
-                            queries=queries,
-                            embedding_function=embedding_function,
-                            k=k,
-                        )
+                        local_collection_names = [
+                            cn for cn in collection_names if not is_eri_collection(cn)
+                        ]
+                        if local_collection_names:
+                            log.debug(
+                                f"Performing standard local query for collections: {local_collection_names}"
+                            )
+
+                            query_result = await query_collection(
+                                collection_names=collection_names,
+                                queries=queries,
+                                embedding_function=embedding_function,
+                                k=k,
+                            )
+                        else:
+                            log.debug(
+                                f"No local collections left to query after filtering ERI."
+                            )
+                            query_result = {
+                                "documents": [[]],
+                                "metadatas": [[]],
+                                "distances": [[]],
+                            }
             except Exception as e:
                 log.exception(e)
 
@@ -1173,7 +1269,12 @@ async def get_sources_from_items(
         if query_result:
             if "data" in item:
                 del item["data"]
-            query_results.append({**query_result, "file": item})
+            if "documents" in query_result and "metadatas" in query_result:
+                query_results.append({**query_result, "file": item})
+            else:
+                log.debug(
+                    f"Skipping item {item.get('id')} due to malformed query_result: {query_result}"
+                )
 
     sources = []
     for query_result in query_results:
