@@ -65,28 +65,42 @@
 
 	let showShareChatModal = false;
 	let showDownloadChatModal = false;
+	let knowledgeSelectionSyncId = 0;
 
+	$: (async () => {
+		const syncId = ++knowledgeSelectionSyncId;
+		const ids = (selectedKnowledges ?? []).filter(Boolean);
 
-$: (async () => {
-        const ids = (selectedKnowledges ?? []).filter(Boolean);
+		if (ids.length === 0) {
+			selectedKnowledgeBase.set(null);
+			return;
+		}
 
-        if (ids.length === 0) {
-            selectedKnowledgeBase.set(null);
-            return;
-        }
+		const fullList = await Promise.all(
+			ids.map(async (id) => {
+				const kb = await getKnowledgeById(localStorage.token, id).catch(() => null);
+				if (!kb) return null;
 
-        const fullList = await Promise.all(
-            ids.map(async (id) => {
-                const kb = await getKnowledgeById(localStorage.token, id).catch(() => null);
-                if (kb) {
-                    return { ...kb, type: 'collection' };
-                }
-                return null;
-            })
-        );
+				if ((kb?.data?.data_source ?? '').toLowerCase() === 'eri') {
+					const ensured = await fetch(`/api/v1/knowledge/${id}/eri/ensure`, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							Authorization: `Bearer ${localStorage.token}`
+						}
+					})
+						.then(async (r) => (r.ok ? await r.json() : null))
+						.catch(() => null);
+					return { ...(ensured ?? kb), type: 'collection' };
+				}
 
-        selectedKnowledgeBase.set(fullList.filter(Boolean));
-    })();
+				return { ...kb, type: 'collection' };
+			})
+		);
+
+		if (syncId !== knowledgeSelectionSyncId) return;
+		selectedKnowledgeBase.set(fullList.filter(Boolean));
+	})();
 	</script>
 
 <ShareChatModal bind:show={showShareChatModal} chatId={$chatId} />
@@ -95,6 +109,8 @@ $: (async () => {
 	id="new-chat-button"
 	class="hidden"
 	on:click={() => {
+		selectedKnowledges = ['']
+		selectedKnowledgeBase.set(null);
 		initNewChat();
 	}}
 	aria-label="New Chat"

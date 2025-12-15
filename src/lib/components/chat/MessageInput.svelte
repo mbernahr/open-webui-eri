@@ -92,6 +92,22 @@
 	import Expand from '../icons/Expand.svelte';
 	import QueuedMessageItem from './MessageInput/QueuedMessageItem.svelte';
 
+	const addKnowledgeAttachment = (data) => {
+		const key = data?.collection_name ?? data?.id;
+
+		if (files.some((f) => (f.collection_name ?? f.id) === key)) {
+			return;
+		}
+
+		const kbFile = {
+			...data,
+			collection_name: data?.collection_name ?? data?.id,
+			status: 'processed'
+		}
+
+		files = [...files, kbFile];
+	}
+
 	const i18n = getContext('i18n');
 
 	export let onUpload: Function = (e) => {};
@@ -860,16 +876,7 @@
 						const { type, data } = e;
 
 						if (type === 'file') {
-							if (files.find((f) => f.id === data.id)) {
-								return;
-							}
-							files = [
-								...files,
-								{
-									...data,
-									status: 'processed'
-								}
-							];
+							addKnowledgeAttachment(data);
 						} else {
 							onUpload(e);
 						}
@@ -895,16 +902,7 @@
 						const { type, data } = e;
 
 						if (type === 'file') {
-							if (files.find((f) => f.id === data.id)) {
-								return;
-							}
-							files = [
-								...files,
-								{
-									...data,
-									status: 'processed'
-								}
-							];
+							addKnowledgeAttachment(data);
 						} else {
 							onUpload(e);
 						}
@@ -930,16 +928,7 @@
 						const { type, data } = e;
 
 						if (type === 'file') {
-							if (files.find((f) => f.id === data.id)) {
-								return;
-							}
-							files = [
-								...files,
-								{
-									...data,
-									status: 'processed'
-								}
-							];
+							addKnowledgeAttachment(data);
 						} else {
 							onUpload(e);
 						}

@@ -252,6 +252,8 @@
 											'Only collections can be edited, create a new knowledge base to edit/add documents.'
 										)
 									);
+								} else if (item?.data?.data_source === 'eri') {
+									goto(`/workspace/knowledge/${item.id}?editEri=1`);
 								} else {
 									goto(`/workspace/knowledge/${item.id}`);
 								}
@@ -259,11 +261,17 @@
 						>
 							<div class=" w-full">
 								<div class=" self-center flex-1 justify-between">
-									<div class="flex items-center justify-between -my-1 h-8">
-										<div class=" flex gap-2 items-center justify-between w-full">
-											<div>
-												<Badge type="success" content={$i18n.t('Collection')} />
-											</div>
+										<div class="flex items-center justify-between -my-1 h-8">
+											<div class=" flex gap-2 items-center justify-between w-full">
+												<div>
+													{#if item?.meta?.document}
+														<Badge type="muted" content={$i18n.t('Document')} />
+													{:else if item?.data?.data_source === 'eri'}
+														<Badge type="info" content="Eri" />
+													{:else}
+														<Badge type="success" content={$i18n.t('Collection')} />
+													{/if}
+												</div>
 
 											{#if !item?.write_access}
 												<div>
@@ -291,32 +299,34 @@
 										{/if}
 									</div>
 
-									<div class=" flex items-center gap-1 justify-between px-1.5">
-										<Tooltip content={item?.description ?? item.name}>
-											<div class=" flex items-center gap-2">
-												<div class=" text-sm font-medium line-clamp-1 capitalize">{item.name}</div>
+										<div class=" flex items-center gap-1 justify-between px-1.5">
+											<Tooltip content={item?.description ?? item.name}>
+												<div class=" flex items-center gap-2">
+													<div class=" text-sm font-medium line-clamp-1 capitalize">{item.name}</div>
 											</div>
 										</Tooltip>
 
 										<div class="flex items-center gap-2 shrink-0">
-											<Tooltip content={dayjs(item.updated_at * 1000).format('LLLL')}>
-												<div class=" text-xs text-gray-500 line-clamp-1 hidden sm:block">
-													{$i18n.t('Updated')}
-													{dayjs(item.updated_at * 1000).fromNow()}
-												</div>
-											</Tooltip>
+												<Tooltip content={dayjs(item.updated_at * 1000).format('LLLL')}>
+													<div class=" text-xs text-gray-500 line-clamp-1 hidden sm:block">
+														{$i18n.t('Updated')}
+														{dayjs(item.updated_at * 1000).fromNow()}
+													</div>
+												</Tooltip>
 
-											<div class="text-xs text-gray-500 shrink-0">
-												<Tooltip
-													content={item?.user?.email ?? $i18n.t('Deleted User')}
-													className="flex shrink-0"
+												<div class="text-xs text-gray-500 shrink-0">
+													<Tooltip
+														content={item?.user?.email ?? $i18n.t('Deleted User')}
+														className="flex shrink-0"
 													placement="top-start"
 												>
-													{$i18n.t('By {{name}}', {
-														name: capitalizeFirstLetter(
-															item?.user?.name ?? item?.user?.email ?? $i18n.t('Deleted User')
-														)
-													})}
+													<div class="line-clamp-2">
+														{$i18n.t('By {{name}}', {
+															name: capitalizeFirstLetter(
+																item?.user?.name ?? item?.user?.email ?? $i18n.t('Deleted User')
+															)
+														})}
+													</div>
 												</Tooltip>
 											</div>
 										</div>
