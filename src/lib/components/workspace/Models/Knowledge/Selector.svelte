@@ -121,7 +121,8 @@
 		items = [...notes, ...collections, ...legacy_collections].map((item) => {
 			return {
 				...item,
-				...(item?.legacy || item?.meta?.legacy || item?.meta?.document ? { legacy: true } : {})
+				...(item?.legacy || item?.meta?.legacy || item?.meta?.document ? { legacy: true } : {}),
+				type: item?.meta?.document ? 'document' : 'collection'
 			};
 		});
 
@@ -200,6 +201,12 @@
 											class="bg-blue-500/20 text-blue-700 dark:text-blue-200 rounded-sm uppercase text-xs font-semibold px-1 shrink-0"
 										>
 											Note
+										</div>
+									{:else if item?.data?.data_source === 'eri'}
+										<div
+											class="bg-blue-500/20 text-blue-700 dark:text-blue-200 rounded-sm uppercase text-xs font-bold px-1"
+										>
+											Eri
 										</div>
 									{:else}
 										<div

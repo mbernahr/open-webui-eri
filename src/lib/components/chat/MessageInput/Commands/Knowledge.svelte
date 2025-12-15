@@ -14,6 +14,7 @@
 	import GlobeAlt from '$lib/components/icons/GlobeAlt.svelte';
 	import Youtube from '$lib/components/icons/Youtube.svelte';
 	import { folders, selectedKnowledgeBase } from '$lib/stores';
+	import { getKnowledgeById } from '$lib/apis/knowledge';
 	import Folder from '$lib/components/icons/Folder.svelte';
 
 	const i18n = getContext('i18n');

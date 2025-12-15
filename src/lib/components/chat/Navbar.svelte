@@ -95,6 +95,8 @@ $: (async () => {
 	id="new-chat-button"
 	class="hidden"
 	on:click={() => {
+		selectedKnowledges = ['']
+		selectedKnowledgeBase.set(null);
 		initNewChat();
 	}}
 	aria-label="New Chat"

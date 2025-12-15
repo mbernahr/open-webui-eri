@@ -81,6 +81,22 @@
 	import Knobs from '../icons/Knobs.svelte';
 	import ValvesModal from '../workspace/common/ValvesModal.svelte';
 
+	const addKnowledgeAttachment = (data) => {
+		const key = data?.collection_name ?? data?.id;
+
+		if (files.some((f) => (f.collection_name ?? f.id) === key)) {
+			return;
+		}
+
+		const kbFile = {
+			...data,
+			collection_name: data?.collection_name ?? data?.id,
+			status: 'processed'
+		}
+
+		files = [...files, kbFile];
+	}
+
 	const i18n = getContext('i18n');
 
 	export let onChange: Function = () => {};
@@ -804,16 +820,7 @@
 						const { type, data } = e;
 
 						if (type === 'file') {
-							if (files.find((f) => f.id === data.id)) {
-								return;
-							}
-							files = [
-								...files,
-								{
-									...data,
-									status: 'processed'
-								}
-							];
+							addKnowledgeAttachment(data);
 						} else {
 							dispatch('upload', e);
 						}
@@ -839,16 +846,7 @@
 						const { type, data } = e;
 
 						if (type === 'file') {
-							if (files.find((f) => f.id === data.id)) {
-								return;
-							}
-							files = [
-								...files,
-								{
-									...data,
-									status: 'processed'
-								}
-							];
+							addKnowledgeAttachment(data);
 						} else {
 							dispatch('upload', e);
 						}
@@ -874,16 +872,7 @@
 						const { type, data } = e;
 
 						if (type === 'file') {
-							if (files.find((f) => f.id === data.id)) {
-								return;
-							}
-							files = [
-								...files,
-								{
-									...data,
-									status: 'processed'
-								}
-							];
+							addKnowledgeAttachment(data);
 						} else {
 							dispatch('upload', e);
 						}

@@ -39,6 +39,7 @@
 		artifactContents,
 		tools,
 		toolServers,
+		selectedKnowledgeBase,
 		functions,
 		selectedFolder,
 		pinnedChats,
@@ -85,6 +86,7 @@
 	import { updateFolderById } from '$lib/apis/folders';
 
 	import Banner from '../common/Banner.svelte';
+	import RichTextInput from '../common/RichTextInput.svelte';
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
@@ -902,6 +904,9 @@
 
 	const initNewChat = async () => {
 		console.log('initNewChat');
+
+		selectedKnowledgeBase.set(null)
+
 		if ($user?.role !== 'admin' && $user?.permissions?.chat?.temporary_enforced) {
 			await temporaryChatEnabled.set(true);
 		}
@@ -1698,6 +1703,7 @@
 					model: model.id,
 					modelName: model.name ?? model.id,
 					modelIdx: modelIdx ? modelIdx : _modelIdx,
+					userContext: null,
 					timestamp: Math.floor(Date.now() / 1000) // Unix epoch
 				};
 
@@ -1751,6 +1757,32 @@
 
 					let responseMessageId =
 						responseMessageIds[`${modelId}-${modelIdx ? modelIdx : _modelIdx}`];
+						let responseMessage = _history.messages[responseMessageId];
+
+						let userContext = null;
+						if ($settings?.memory ?? false) {
+							if (userContext === null) {
+								const res = await queryMemory(localStorage.token, prompt).catch((error) => {
+									toast.error(`${error}`);
+									return null;
+								});
+								if (res) {
+									if (res.documents[0].length > 0) {
+										userContext = res.documents[0].reduce((acc, doc, index) => {
+											const createdAtTimestamp = res.metadatas[0][index].created_at;
+											const createdAtDate = new Date(createdAtTimestamp * 1000)
+												.toISOString()
+												.split('T')[0];
+											return `${acc}${index + 1}. [${createdAtDate}]. ${doc}\n`;
+										}, '');
+									}
+
+									console.log(userContext);
+								}
+							}
+						}
+						responseMessage.userContext = userContext;
+
 					const chatEventEmitter = await getChatEventEmitter(model.id, _chatId);
 
 					scrollToBottom();
@@ -1831,6 +1863,55 @@
 		});
 
 		let files = JSON.parse(JSON.stringify(chatFiles));
+		try {
+			const kbSel = get(selectedKnowledgeBase);
+			if (kbSel) {
+				const kbArray = Array.isArray(kbSel) ? kbSel : [kbSel];
+
+				const kbFiles = kbArray.map((kb) => {
+					const id = kb?.id ?? kb?._id ?? kb?.collection_id ?? kb?.value;
+					const name = kb?.name ?? kb?.title ?? kb?.collection_name ?? 'Knowledge';
+					const collection_names = Array.isArray(kb?.collection_names) 
+						? kb.collection_names  
+						: name ? [name] : undefined;
+
+					return {
+						...kb,
+						type: 'collection',
+						...(id? { id } : {}),
+						collection_name: kb?.collection_name ?? id,
+          				...(collection_names ? { collection_names } : {}),
+						status: "processed",
+					};
+				});
+
+				const seen = new Set();
+				const uniqueKbFiles = kbFiles.filter((f) => {
+					const key = f?.id ?? f?.collection_name ?? JSON.stringify(f?.collection_names ?? []);
+					if (seen.has(key)) return false;
+					seen.add(key);
+					return true;
+				});
+
+				for (const kf of uniqueKbFiles) {
+					const already = files.some((f) =>
+						f.type === 'collection' &&
+						(
+							(kf.id && f.id === kf.id) ||
+							(kf.collection_name && f.collection_name === kf.collection_name) ||
+							(JSON.stringify(kf.collection_names ?? []) === JSON.stringify(f.collection_names ?? []))
+						)
+					);
+					if (!already) {
+						files.push(kf);
+						userMessage.files = [...(userMessage.files ?? []), kf];
+					}
+				}
+			}
+		} catch (e) {
+			console.warn('KB merge skipped:', e);
+		}
+		
 		files.push(
 			...(userMessage?.files ?? []).filter((item) =>
 				['doc', 'text', 'file', 'note', 'chat', 'collection'].includes(item.type)
@@ -1867,10 +1948,23 @@
 			true;
 
 		let messages = [
-			params?.system || $settings.system
+			params?.system || $settings.system || (responseMessage?.userContext ?? null)
 				? {
 						role: 'system',
-						content: `${params?.system ?? $settings?.system ?? ''}`
+						content: `${promptTemplate(
+							params?.system ?? $settings?.system ?? '',
+							$user?.name,
+							$settings?.userLocation
+								? await getAndUpdateUserLocation(localStorage.token).catch((err) => {
+										console.error(err);
+										return undefined;
+									})
+								: undefined
+						)}${
+							(responseMessage?.userContext ?? null)
+								? `\n\nUser Context:\n${responseMessage?.userContext ?? ''}`
+								: ''
+						}`
 					}
 				: undefined,
 			..._messages.map((message) => ({
@@ -2590,9 +2684,15 @@
 									}}
 									on:submit={async (e) => {
 										clearDraft();
-										if (e.detail || files.length > 0) {
+										const text = e.detail;
+										if (text || files.length > 0) {
 											await tick();
-											submitPrompt(e.detail.replaceAll('\n\n', '\n'));
+
+											submitPrompt(
+												($settings?.richTextInput ?? true)
+												? text.replaceAll('\n\n', '\n')
+												: text
+											);
 										}
 									}}
 								/>

@@ -206,6 +206,8 @@
 											'Only collections can be edited, create a new knowledge base to edit/add documents.'
 										)
 									);
+								} else if (item?.data?.data_source === 'eri') {
+									goto(`/workspace/knowledge/${item.id}?editEri=1`);
 								} else {
 									goto(`/workspace/knowledge/${item.id}`);
 								}
@@ -218,6 +220,8 @@
 											<div>
 												{#if item?.meta?.document}
 													<Badge type="muted" content={$i18n.t('Document')} />
+												{:else if item?.data?.data_source === 'eri'}
+													<Badge type="info" content="Eri" />
 												{:else}
 													<Badge type="success" content={$i18n.t('Collection')} />
 												{/if}
@@ -242,22 +246,27 @@
 									</div>
 
 									<div class=" flex items-center gap-1 justify-between px-1.5">
-										<div class=" flex items-center gap-2">
-											<div class=" text-sm font-medium line-clamp-1 capitalize">{item.name}</div>
+										<div class=" flex flex-col gap-2 w-full">
+											<div class="text-left text-sm w-full font-medium line-clamp-1 capitalize">{item.name}</div>
+											<div class="text-left text-xs w-full line-clamp-1 text-gray-500 bg-transparent outline-hidden">
+												{item?.description ?? $i18n.t('Knowledge Name')}
+											</div>
 										</div>
 
-										<div>
+										<div class="flex w-24">
 											<div class="text-xs text-gray-500">
 												<Tooltip
 													content={item?.user?.email ?? $i18n.t('Deleted User')}
 													className="flex shrink-0"
 													placement="top-start"
 												>
-													{$i18n.t('By {{name}}', {
-														name: capitalizeFirstLetter(
-															item?.user?.name ?? item?.user?.email ?? $i18n.t('Deleted User')
-														)
-													})}
+													<div class="line-clamp-2">
+														{$i18n.t('By {{name}}', {
+															name: capitalizeFirstLetter(
+																item?.user?.name ?? item?.user?.email ?? $i18n.t('Deleted User')
+															)
+														})}
+													</div>
 												</Tooltip>
 											</div>
 										</div>
