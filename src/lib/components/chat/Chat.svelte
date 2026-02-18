@@ -1961,22 +1961,28 @@
 			if (kbSel) {
 				const kbArray = Array.isArray(kbSel) ? kbSel : [kbSel];
 
-				const kbFiles = kbArray.map((kb) => {
-					const id = kb?.id ?? kb?._id ?? kb?.collection_id ?? kb?.value;
-					const name = kb?.name ?? kb?.title ?? kb?.collection_name ?? 'Knowledge';
-					const collection_names = Array.isArray(kb?.collection_names) 
-						? kb.collection_names  
-						: name ? [name] : undefined;
+				const kbFiles = kbArray
+					.map((kb) => {
+						const id = kb?.id ?? kb?._id ?? kb?.collection_id ?? kb?.value;
+						const collectionName = kb?.collection_name ?? id;
+						const collectionNames = Array.isArray(kb?.collection_names)
+							? kb.collection_names
+							: id
+								? [id]
+								: undefined;
 
-					return {
-						...kb,
-						type: 'collection',
-						...(id? { id } : {}),
-						collection_name: kb?.collection_name ?? id,
-          				...(collection_names ? { collection_names } : {}),
-						status: "processed",
-					};
-				});
+						if (!collectionName) return null;
+
+						return {
+							...kb,
+							type: 'collection',
+							...(id ? { id } : {}),
+							collection_name: collectionName,
+							...(collectionNames ? { collection_names: collectionNames } : {}),
+							status: 'processed'
+						};
+					})
+					.filter(Boolean);
 
 				const seen = new Set();
 				const uniqueKbFiles = kbFiles.filter((f) => {

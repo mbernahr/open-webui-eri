@@ -13,11 +13,13 @@
 	export let value = '';
 	export let placeholder = $i18n.t('Select Data');
 	export let items: {
+		id?: string;
 		label: string;
 		value: string;
 		description?: string;
 		badge?: string;
 		tags?: string[];
+		data?: Record<string, unknown>;
 	}[] = [];
 
 	export let className = 'w-[32rem]';

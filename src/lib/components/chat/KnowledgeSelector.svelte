@@ -4,6 +4,7 @@
 	import Selector from './KnowledgeSelector/Selector.svelte';
 	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
+	import { getKnowledgeBases } from '$lib/apis/knowledge';
 
 	export let selectedKnowledges = [''];
 	export let disabled = false;
@@ -16,13 +17,8 @@
 
 	onMount(async () => {
 		try {
-			const res = await fetch('/api/v1/knowledge/list', {
-				headers: {
-					authorization: `Bearer ${localStorage.token}`
-				}
-			});
-			if (!res.ok) throw new Error(`Fehler: ${res.status}`);
-			const data = await res.json();
+			const res = await getKnowledgeBases(localStorage.token, 1);
+			const data = res?.items ?? [];
 
 			knowledgeItems = data.map((kb) => {
 				const badge = kb.meta?.document
@@ -33,8 +29,10 @@
 
 				return {
 					value: kb.id,
+					id: kb.id,
 					label: kb.name,
 					description: kb.description ?? '',
+					data: kb.data ?? {},
 					badge,
 					tags: [badge]
 				};

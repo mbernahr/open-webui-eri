@@ -1213,10 +1213,29 @@ async def get_sources_from_items(
                 continue
 
             try:
-                if full_context:
+                # Always try direct ERI retrieval first for a single selected collection.
+                # This keeps ERI working even when hybrid search is enabled globally.
+                if query_result is None and len(collection_names) == 1 and queries:
+                    key = list(collection_names)[0]
+                    if is_eri_collection(key):
+                        try:
+                            log.debug(
+                                f"Calling ERI retrieval: {key} with query '{queries[0]}'"
+                            )
+                            eri_ctx = await query_eri_if_applicable(key, queries[0], k)
+                            if eri_ctx:
+                                query_result = eri_ctx
+                                log.debug(f"ERI retrieval successful for {key}")
+                        except Exception as e:
+                            log.error(
+                                f"ERI retrieval failed for {key}: {e}",
+                                exc_info=True,
+                            )
+                            query_result = None
+
+                if query_result is None and full_context:
                     query_result = get_all_items_from_collections(collection_names)
-                else:
-                    query_result = None  # Initialize to None
+                elif query_result is None:
                     if hybrid_search:
                         try:
                             query_result = await query_collection_with_hybrid_search(

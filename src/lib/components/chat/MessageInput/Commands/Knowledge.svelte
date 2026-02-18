@@ -168,55 +168,77 @@
 		{/if}
 
 		{#if !['youtube', 'web'].includes(item.type)}
-			<button
-				class=" px-2 py-1 rounded-xl w-full text-left flex justify-between items-center {idx ===
-				selectedIdx
-					? ' bg-gray-50 dark:bg-gray-800 dark:text-gray-100 selected-command-option-button'
-					: ''}"
-				type="button"
-				on:click={async () => {
-					console.log(item);
-					let full = null;
+				<button
+					class=" px-2 py-1 rounded-xl w-full text-left flex justify-between items-center {idx ===
+					selectedIdx
+						? ' bg-gray-50 dark:bg-gray-800 dark:text-gray-100 selected-command-option-button'
+						: ''}"
+					type="button"
+					on:click={async () => {
+						console.log(item);
+						let full = null;
+						let ensured = null;
 
-					if (item.type === 'collection') {
-						try { 
-							full = await getKnowledgeById(localStorage.token, item.id);
-							selectedKnowledgeBase.set(full);
-							await tick();
-						} catch (e) {
-							console.error(e);
+						if (item.type === 'collection') {
+							try {
+								full = await getKnowledgeById(localStorage.token, item.id);
+							} catch (e) {
+								console.error(e);
+							}
 						}
-					}
 
-					const isEri = 
-						item?.data?.data_source === 'eri' ||
-						full?.data?.data_source === 'eri' ||
-						item?.badge === 'ERI';
+						const isEri =
+							item?.data?.data_source === 'eri' ||
+							full?.data?.data_source === 'eri' ||
+							item?.badge === 'ERI';
 
-					if (isEri) {
-						try {
-							const ensured = await fetch(`/api/v1/knowledge/${item.id}/eri/ensure`, {
-								method: 'POST',
-								headers: {
-									'Content-Type': 'application/json',
-									Authorization: `Bearer ${localStorage.token}`
+						if (isEri) {
+							try {
+								const ensuredCandidate = await fetch(`/api/v1/knowledge/${item.id}/eri/ensure`, {
+									method: 'POST',
+									headers: {
+										'Content-Type': 'application/json',
+										Authorization: `Bearer ${localStorage.token}`
+									}
+								}).then(async (r) => (r.ok ? await r.json() : null));
+
+								if (ensuredCandidate?.id || ensuredCandidate?.collection_name) {
+									ensured = ensuredCandidate;
 								}
-							}).then(r => r.json());
-							selectedKnowledgeBase.set(ensured);
-						} catch (e) {
-							console.error('ERI ensure failed', e);
+							} catch (e) {
+								console.error('ERI ensure failed', e);
+							}
 						}
-					}
-					onSelect({
-						type: 'knowledge',
-						data: item
-					});
-				}}
-				on:mousemove={() => {
-					selectedIdx = idx;
-				}}
-				data-selected={idx === selectedIdx}
-			>
+
+						const selectedKnowledgeBaseData = ensured ?? full ?? item;
+						const selectedKnowledge =
+							item.type === 'collection'
+								? {
+										...selectedKnowledgeBaseData,
+										type: 'collection',
+										id: selectedKnowledgeBaseData?.id ?? item?.id,
+										collection_name:
+											selectedKnowledgeBaseData?.collection_name ??
+											selectedKnowledgeBaseData?.id ??
+											item?.id
+									}
+								: item;
+
+						if (item.type === 'collection') {
+							selectedKnowledgeBase.set(selectedKnowledge);
+							await tick();
+						}
+
+						onSelect({
+							type: 'knowledge',
+							data: selectedKnowledge
+						});
+					}}
+					on:mousemove={() => {
+						selectedIdx = idx;
+					}}
+					data-selected={idx === selectedIdx}
+				>
 				<div class="  text-black dark:text-gray-100 flex items-center gap-1">
 					<Tooltip
 						content={item?.legacy

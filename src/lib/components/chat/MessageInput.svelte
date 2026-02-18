@@ -93,7 +93,14 @@
 	import QueuedMessageItem from './MessageInput/QueuedMessageItem.svelte';
 
 	const addKnowledgeAttachment = (data) => {
-		const key = data?.collection_name ?? data?.id;
+		const isCollectionSource =
+			data?.type === 'collection' ||
+			Boolean(data?.collection_names) ||
+			Boolean(data?.data?.data_source);
+
+		const normalizedId = data?.id ?? data?.collection_name;
+		const key = normalizedId ?? data?.collection_name;
+		if (!key) return;
 
 		if (files.some((f) => (f.collection_name ?? f.id) === key)) {
 			return;
@@ -101,12 +108,20 @@
 
 		const kbFile = {
 			...data,
-			collection_name: data?.collection_name ?? data?.id,
+			...(isCollectionSource
+				? {
+						type: 'collection',
+						id: normalizedId,
+						collection_name: data?.collection_name ?? normalizedId
+					}
+				: {
+						collection_name: data?.collection_name ?? normalizedId
+					}),
 			status: 'processed'
-		}
+		};
 
 		files = [...files, kbFile];
-	}
+	};
 
 	const i18n = getContext('i18n');
 

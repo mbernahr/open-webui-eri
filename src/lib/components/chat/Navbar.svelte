@@ -67,6 +67,20 @@
 	let showDownloadChatModal = false;
 	let knowledgeSelectionSyncId = 0;
 
+	const normalizeKnowledgeSelection = (kb, fallbackId) => {
+		if (!kb) return null;
+
+		const id = kb?.id ?? kb?.collection_name ?? fallbackId;
+		if (!id) return null;
+
+		return {
+			...kb,
+			type: 'collection',
+			id,
+			collection_name: kb?.collection_name ?? id
+		};
+	};
+
 	$: (async () => {
 		const syncId = ++knowledgeSelectionSyncId;
 		const ids = (selectedKnowledges ?? []).filter(Boolean);
@@ -82,7 +96,7 @@
 				if (!kb) return null;
 
 				if ((kb?.data?.data_source ?? '').toLowerCase() === 'eri') {
-					const ensured = await fetch(`/api/v1/knowledge/${id}/eri/ensure`, {
+					const ensuredCandidate = await fetch(`/api/v1/knowledge/${id}/eri/ensure`, {
 						method: 'POST',
 						headers: {
 							'Content-Type': 'application/json',
@@ -91,10 +105,14 @@
 					})
 						.then(async (r) => (r.ok ? await r.json() : null))
 						.catch(() => null);
-					return { ...(ensured ?? kb), type: 'collection' };
+
+					const ensured =
+						ensuredCandidate?.id || ensuredCandidate?.collection_name ? ensuredCandidate : null;
+
+					return normalizeKnowledgeSelection(ensured ?? kb, id);
 				}
 
-				return { ...kb, type: 'collection' };
+				return normalizeKnowledgeSelection(kb, id);
 			})
 		);
 
