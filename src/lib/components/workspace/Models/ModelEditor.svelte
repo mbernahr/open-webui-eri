@@ -284,22 +284,46 @@
 				: null;
 
 			knowledge = (model?.meta?.knowledge ?? []).map((item) => {
-				if (item?.collection_name && item?.type !== 'file') {
-					return {
-						id: item.collection_name,
-						name: item.name,
-						legacy: true
-					};
-				} else if (item?.collection_names) {
-					return {
-						name: item.name,
-						type: 'collection',
-						collection_names: item.collection_names,
-						legacy: true
-					};
-				} else {
+				const isCollectionItem =
+					item?.type === 'collection' ||
+					Boolean(item?.collection_name) ||
+					Boolean(item?.collection_names) ||
+					Boolean(item?.legacy && item?.id && item?.type !== 'file');
+
+				if (!isCollectionItem || item?.type === 'file') {
 					return item;
 				}
+
+				const resolvedId =
+					item?.id ??
+					item?._id ??
+					item?.collection_id ??
+					item?.collection_name ??
+					(Array.isArray(item?.collection_names) ? item.collection_names[0] : undefined);
+
+				const resolvedCollectionName =
+					item?.collection_name ??
+					(Array.isArray(item?.collection_names) ? item.collection_names[0] : undefined) ??
+					resolvedId;
+
+				const resolvedCollectionNames =
+					Array.isArray(item?.collection_names) && item.collection_names.length > 0
+						? item.collection_names
+						: resolvedCollectionName
+							? [resolvedCollectionName]
+							: resolvedId
+								? [resolvedId]
+								: [];
+
+				return {
+					...item,
+					type: 'collection',
+					...(resolvedId ? { id: resolvedId } : {}),
+					...(resolvedCollectionName ? { collection_name: resolvedCollectionName } : {}),
+					...(resolvedCollectionNames.length > 0
+						? { collection_names: resolvedCollectionNames }
+						: {})
+				};
 			});
 
 			toolIds = model?.meta?.toolIds ?? [];

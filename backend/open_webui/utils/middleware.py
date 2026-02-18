@@ -30,6 +30,7 @@ from open_webui.utils.misc import is_string_allowed
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
+from open_webui.models.knowledge import Knowledges
 from open_webui.models.users import Users
 from open_webui.socket.main import (
     get_event_call,
@@ -229,6 +230,177 @@ def _normalize_generated_retrieval_queries(
 
     fallback = (user_message or "").strip()
     return [fallback] if fallback else []
+
+
+def _prioritize_user_message_query(
+    queries: list[str], user_message: Optional[str]
+) -> list[str]:
+    normalized_user_message = (user_message or "").strip()
+    if not normalized_user_message:
+        return queries
+
+    prioritized_queries: list[str] = [normalized_user_message]
+    for query in queries or []:
+        if query is None:
+            continue
+        query_text = query.strip() if isinstance(query, str) else str(query).strip()
+        if not query_text:
+            continue
+        if query_text.casefold() == normalized_user_message.casefold():
+            continue
+        prioritized_queries.append(query_text)
+
+    return prioritized_queries
+
+
+def _to_non_empty_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+
+    if not isinstance(value, str):
+        value = str(value)
+
+    normalized = value.strip()
+    return normalized or None
+
+
+def _find_knowledge_by_key(key: Optional[str]):
+    key = _to_non_empty_str(key)
+    if not key:
+        return None
+
+    knowledge = Knowledges.get_knowledge_by_id(key)
+    if knowledge:
+        return knowledge
+
+    try:
+        for candidate in Knowledges.get_knowledge_bases():
+            if (
+                getattr(candidate, "id", None) == key
+                or getattr(candidate, "collection_name", None) == key
+                or getattr(candidate, "name", None) == key
+            ):
+                return candidate
+    except Exception:
+        pass
+
+    return None
+
+
+def _get_file_identity(item: dict) -> str:
+    if not isinstance(item, dict):
+        return "invalid"
+
+    collection_names = item.get("collection_names")
+    if isinstance(collection_names, list):
+        normalized_names = [str(name) for name in collection_names if name is not None]
+        collection_names_key = json.dumps(normalized_names, sort_keys=True)
+    else:
+        collection_names_key = ""
+
+    return "|".join(
+        [
+            str(item.get("type") or ""),
+            str(item.get("id") or ""),
+            str(item.get("collection_name") or ""),
+            collection_names_key,
+            str(item.get("url") or ""),
+            str(item.get("name") or ""),
+        ]
+    )
+
+
+def _normalize_model_knowledge_items(model_knowledge: list[Any]) -> list[dict]:
+    normalized_items: list[dict] = []
+
+    for raw_item in model_knowledge or []:
+        if not isinstance(raw_item, dict):
+            continue
+
+        item = dict(raw_item)
+        item_type = item.get("type")
+
+        if item_type in {"file", "note", "chat", "url", "text", "doc", "web_search"}:
+            normalized_items.append(item)
+            continue
+
+        item_id = _to_non_empty_str(
+            item.get("id") or item.get("_id") or item.get("collection_id")
+        )
+        collection_name = _to_non_empty_str(item.get("collection_name"))
+
+        collection_names_raw = item.get("collection_names")
+        collection_names = (
+            [
+                str(name).strip()
+                for name in collection_names_raw
+                if _to_non_empty_str(name) is not None
+            ]
+            if isinstance(collection_names_raw, list)
+            else []
+        )
+
+        looks_like_collection = (
+            item_type == "collection"
+            or collection_name is not None
+            or len(collection_names) > 0
+            or bool(item.get("legacy") and item_id)
+        )
+
+        if not looks_like_collection:
+            normalized_items.append(item)
+            continue
+
+        knowledge = (
+            _find_knowledge_by_key(item_id)
+            or _find_knowledge_by_key(collection_name)
+            or _find_knowledge_by_key(collection_names[0] if collection_names else None)
+        )
+
+        canonical_id = (
+            _to_non_empty_str(getattr(knowledge, "id", None))
+            or item_id
+            or collection_name
+            or (collection_names[0] if collection_names else None)
+        )
+        canonical_collection_name = (
+            _to_non_empty_str(getattr(knowledge, "collection_name", None))
+            or collection_name
+            or canonical_id
+        )
+
+        if len(collection_names) == 0:
+            if canonical_collection_name:
+                collection_names = [canonical_collection_name]
+            elif canonical_id:
+                collection_names = [canonical_id]
+
+        normalized_item = {
+            **item,
+            "type": "collection",
+            "status": item.get("status") or "processed",
+        }
+
+        if canonical_id:
+            normalized_item["id"] = canonical_id
+        if canonical_collection_name:
+            normalized_item["collection_name"] = canonical_collection_name
+        if collection_names:
+            normalized_item["collection_names"] = collection_names
+
+        if knowledge and isinstance(getattr(knowledge, "data", None), dict):
+            data_source = knowledge.data.get("data_source")
+            if data_source:
+                current_data = (
+                    normalized_item.get("data")
+                    if isinstance(normalized_item.get("data"), dict)
+                    else {}
+                )
+                normalized_item["data"] = {**current_data, "data_source": data_source}
+
+        normalized_items.append(normalized_item)
+
+    return normalized_items
 
 
 def get_citation_source_from_tool_result(
@@ -1857,6 +2029,62 @@ async def chat_completion_files_handler(
     if files := body.get("metadata", {}).get("files", None):
         # Check if all files are in full context mode
         all_full_context = all(item.get("context") == "full" for item in files)
+        metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        active_model = (
+            metadata.get("model") if isinstance(metadata.get("model"), dict) else {}
+        )
+        active_model_id = active_model.get("id") or body.get("model")
+        workspace_model = bool(active_model.get("base_model_id"))
+        function_calling_mode = (
+            metadata.get("params", {}).get("function_calling")
+            if isinstance(metadata.get("params"), dict)
+            else None
+        )
+        collection_refs = []
+        for file_item in files:
+            if not isinstance(file_item, dict):
+                continue
+            if not (
+                file_item.get("type") == "collection"
+                or file_item.get("collection_name")
+                or file_item.get("collection_names")
+            ):
+                continue
+
+            collection_refs.append(
+                {
+                    "id": file_item.get("id"),
+                    "collection_name": file_item.get("collection_name"),
+                    "collection_names": (
+                        file_item.get("collection_names")
+                        if isinstance(file_item.get("collection_names"), list)
+                        else None
+                    ),
+                    "data_source": (file_item.get("data") or {}).get("data_source")
+                    if isinstance(file_item.get("data"), dict)
+                    else None,
+                }
+            )
+        log.info(
+            "RAG request trace: model=%s workspace_model=%s function_calling=%s files=%d collection_refs=%d top_k=%s eri_top_k=%s top_k_reranker=%s relevance_threshold=%s hybrid=%s rag_full_context=%s",
+            active_model_id,
+            workspace_model,
+            function_calling_mode,
+            len(files),
+            len(collection_refs),
+            request.app.state.config.TOP_K,
+            getattr(
+                request.app.state.config,
+                "ERI_TOP_K",
+                request.app.state.config.TOP_K,
+            ),
+            request.app.state.config.TOP_K_RERANKER,
+            request.app.state.config.RELEVANCE_THRESHOLD,
+            request.app.state.config.ENABLE_RAG_HYBRID_SEARCH,
+            request.app.state.config.RAG_FULL_CONTEXT,
+        )
+        if collection_refs:
+            log.info("RAG request collections: %s", collection_refs[:20])
 
         user_message = get_last_user_message(body["messages"])
         queries = []
@@ -1904,6 +2132,13 @@ async def chat_completion_files_handler(
 
         if len(queries) == 0:
             queries = _normalize_generated_retrieval_queries([], user_message)
+        queries = _prioritize_user_message_query(queries, user_message)
+        log.info(
+            "RAG query trace: model=%s query_count=%d queries=%s",
+            active_model_id,
+            len(queries),
+            queries[:5],
+        )
 
         try:
             # Directly await async get_sources_from_items (no thread needed - fully async now)
@@ -1968,6 +2203,12 @@ async def chat_completion_files_handler(
                     "done": True,
                 },
             }
+        )
+        log.info(
+            "RAG retrieval result trace: model=%s sources_items=%d unique_sources=%d",
+            active_model_id,
+            len(sources),
+            sources_count,
         )
 
     return body, {"sources": sources}
@@ -2221,11 +2462,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data["messages"])
     model_knowledge = model.get("info", {}).get("meta", {}).get("knowledge", False)
-
-    if (
+    model_knowledge_items = (
         model_knowledge
-        and metadata.get("params", {}).get("function_calling") != "native"
-    ):
+        if isinstance(model_knowledge, list)
+        else ([model_knowledge] if isinstance(model_knowledge, dict) else [])
+    )
+
+    if model_knowledge_items:
         await event_emitter(
             {
                 "type": "status",
@@ -2237,31 +2480,68 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             }
         )
 
-        knowledge_files = []
-        for item in model_knowledge:
-            if item.get("collection_name"):
-                knowledge_files.append(
-                    {
-                        "collection_name": item.get("collection_name"),
-                        "name": item.get("name"),
-                        "legacy": True,
-                    }
-                )
-            elif item.get("collection_names"):
-                knowledge_files.append(
-                    {
-                        "name": item.get("name"),
-                        "type": "collection",
-                        "collection_names": item.get("collection_names"),
-                        "legacy": True,
-                    }
-                )
-            else:
-                knowledge_files.append(item)
-
         files = form_data.get("files", [])
-        files.extend(knowledge_files)
+        normalized_knowledge_files = _normalize_model_knowledge_items(
+            model_knowledge_items
+        )
+
+        existing_file_keys = {
+            _get_file_identity(file_item)
+            for file_item in files
+            if isinstance(file_item, dict)
+        }
+
+        appended_model_files = 0
+        for knowledge_item in normalized_knowledge_files:
+            item_key = _get_file_identity(knowledge_item)
+            if item_key in existing_file_keys:
+                continue
+
+            files.append(knowledge_item)
+            existing_file_keys.add(item_key)
+            appended_model_files += 1
+
         form_data["files"] = files
+
+        collection_refs = []
+        for file_item in files:
+            if not isinstance(file_item, dict):
+                continue
+
+            if not (
+                file_item.get("type") == "collection"
+                or file_item.get("collection_name")
+                or file_item.get("collection_names")
+            ):
+                continue
+
+            collection_refs.append(
+                {
+                    "id": file_item.get("id"),
+                    "collection_name": file_item.get("collection_name"),
+                    "collection_names": (
+                        file_item.get("collection_names")
+                        if isinstance(file_item.get("collection_names"), list)
+                        else None
+                    ),
+                    "data_source": (file_item.get("data") or {}).get("data_source")
+                    if isinstance(file_item.get("data"), dict)
+                    else None,
+                }
+            )
+
+        log.info(
+            "Model knowledge trace: model=%s workspace_model=%s function_calling=%s model_knowledge_items=%d appended_model_files=%d total_files=%d collection_refs=%d",
+            model.get("id"),
+            bool(model.get("base_model_id")),
+            metadata.get("params", {}).get("function_calling"),
+            len(model_knowledge_items),
+            appended_model_files,
+            len(files),
+            len(collection_refs),
+        )
+        if collection_refs:
+            log.info("Model knowledge collections: %s", collection_refs[:20])
 
     variables = form_data.pop("variables", None)
 
