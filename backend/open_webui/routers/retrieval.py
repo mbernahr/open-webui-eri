@@ -462,6 +462,9 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         # RAG settings
         "RAG_TEMPLATE": request.app.state.config.RAG_TEMPLATE,
         "TOP_K": request.app.state.config.TOP_K,
+        "ERI_TOP_K": getattr(
+            request.app.state.config, "ERI_TOP_K", request.app.state.config.TOP_K
+        ),
         "BYPASS_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL,
         "RAG_FULL_CONTEXT": request.app.state.config.RAG_FULL_CONTEXT,
         # Hybrid search settings
@@ -658,6 +661,7 @@ class ConfigForm(BaseModel):
     # RAG settings
     RAG_TEMPLATE: Optional[str] = None
     TOP_K: Optional[int] = None
+    ERI_TOP_K: Optional[int] = None
     BYPASS_EMBEDDING_AND_RETRIEVAL: Optional[bool] = None
     RAG_FULL_CONTEXT: Optional[bool] = None
 
@@ -748,6 +752,13 @@ async def update_rag_config(
         form_data.TOP_K
         if form_data.TOP_K is not None
         else request.app.state.config.TOP_K
+    )
+    request.app.state.config.ERI_TOP_K = (
+        form_data.ERI_TOP_K
+        if form_data.ERI_TOP_K is not None
+        else getattr(
+            request.app.state.config, "ERI_TOP_K", request.app.state.config.TOP_K
+        )
     )
     request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL = (
         form_data.BYPASS_EMBEDDING_AND_RETRIEVAL
@@ -1214,6 +1225,9 @@ async def update_rag_config(
         # RAG settings
         "RAG_TEMPLATE": request.app.state.config.RAG_TEMPLATE,
         "TOP_K": request.app.state.config.TOP_K,
+        "ERI_TOP_K": getattr(
+            request.app.state.config, "ERI_TOP_K", request.app.state.config.TOP_K
+        ),
         "BYPASS_EMBEDDING_AND_RETRIEVAL": request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL,
         "RAG_FULL_CONTEXT": request.app.state.config.RAG_FULL_CONTEXT,
         # Hybrid search settings

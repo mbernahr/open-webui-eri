@@ -4,6 +4,7 @@ import sys
 import os
 import base64
 import textwrap
+import hashlib
 
 import asyncio
 from aiocache import cached
@@ -14,6 +15,7 @@ import html
 import inspect
 import re
 import ast
+from collections import Counter
 
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
@@ -155,6 +157,78 @@ DEFAULT_CODE_INTERPRETER_TAGS = [("<code_interpreter>", "</code_interpreter>")]
 def output_id(prefix: str) -> str:
     """Generate OR-style ID: prefix + 24-char hex UUID."""
     return f"{prefix}_{uuid4().hex[:24]}"
+
+
+def _get_non_empty_source_value(*values) -> Optional[str]:
+    placeholder_values = {"", "n/a", "na", "none", "null", "unknown"}
+    for value in values:
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            value = str(value)
+        normalized = value.strip()
+        if normalized and normalized.lower() not in placeholder_values:
+            return normalized
+    return None
+
+
+def _get_source_count_key(
+    metadata: dict | None, source_info: dict | None, document: str | None, index: int
+) -> str:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    source_info = source_info if isinstance(source_info, dict) else {}
+
+    links = source_info.get("links")
+    first_link = links[0] if isinstance(links, list) and len(links) > 0 else None
+
+    key = _get_non_empty_source_value(
+        metadata.get("source"),
+        metadata.get("path"),
+        metadata.get("url"),
+        metadata.get("filename"),
+        metadata.get("name"),
+        metadata.get("file_id"),
+        metadata.get("id"),
+        first_link,
+        source_info.get("path"),
+        source_info.get("url"),
+        source_info.get("id"),
+        source_info.get("filename"),
+        source_info.get("name"),
+    )
+    if key:
+        return key
+
+    if isinstance(document, str):
+        doc = document.strip()
+        if doc:
+            digest = hashlib.sha1(doc.encode("utf-8")).hexdigest()
+            return f"doc:{digest}"
+
+    return f"source:{index}"
+
+
+def _normalize_generated_retrieval_queries(
+    queries: list[Any], user_message: Optional[str]
+) -> list[str]:
+    normalized_queries: list[str] = []
+    for query in queries or []:
+        if query is None:
+            continue
+
+        query_text = query if isinstance(query, str) else str(query)
+        query_text = query_text.strip()
+
+        if not query_text:
+            continue
+
+        normalized_queries.append(query_text)
+
+    if normalized_queries:
+        return normalized_queries
+
+    fallback = (user_message or "").strip()
+    return [fallback] if fallback else []
 
 
 def get_citation_source_from_tool_result(
@@ -816,19 +890,85 @@ def apply_source_context_to_messages(
     context_string = ""
     citation_idx = {}
 
+    docs_in_sources = 0
+    docs_with_text = 0
+    docs_in_prompt = 0
+    text_field_usage = Counter()
+    source_preview = []
+
     for source in sources:
-        for doc, meta in zip(source.get("document", []), source.get("metadata", [])):
-            src_id = meta.get("source") or source.get("source", {}).get("id") or "N/A"
+        source_info = source.get("source")
+        source_info = source_info if isinstance(source_info, dict) else {}
+
+        documents = source.get("document")
+        documents = documents if isinstance(documents, list) else []
+        metadatas = source.get("metadata")
+        metadatas = metadatas if isinstance(metadatas, list) else []
+
+        for index, doc in enumerate(documents):
+            docs_in_sources += 1
+            meta = metadatas[index] if index < len(metadatas) else {}
+            meta = meta if isinstance(meta, dict) else {}
+
+            if isinstance(doc, str):
+                doc_text = doc.strip()
+            elif doc is None:
+                doc_text = ""
+            else:
+                try:
+                    doc_text = json.dumps(doc, ensure_ascii=False).strip()
+                except Exception:
+                    doc_text = str(doc).strip()
+
+            if not doc_text:
+                continue
+
+            docs_with_text += 1
+            src_id = (
+                meta.get("source")
+                or meta.get("path")
+                or source_info.get("id")
+                or source_info.get("name")
+                or "N/A"
+            )
             if src_id not in citation_idx:
                 citation_idx[src_id] = len(citation_idx) + 1
-            src_name = source.get("source", {}).get("name")
+            src_name = source_info.get("name") or meta.get("name")
             context_string += (
                 f'<source id="{citation_idx[src_id]}"'
                 + (f' name="{src_name}"' if src_name else "")
-                + f">{doc}</source>\n"
+                + f">{doc_text}</source>\n"
             )
+            docs_in_prompt += 1
+
+            text_field = meta.get("_text_field") or "document"
+            text_field_usage[text_field] += 1
+            if len(source_preview) < 5:
+                links = meta.get("links")
+                first_link = links[0] if isinstance(links, list) and links else None
+                source_preview.append(
+                    {
+                        "name": meta.get("name") or source_info.get("name"),
+                        "path": meta.get("path"),
+                        "source": meta.get("source"),
+                        "link": first_link,
+                        "text_field": text_field,
+                        "text_len": len(doc_text),
+                    }
+                )
 
     context_string = context_string.strip()
+    log.info(
+        "RAG context trace: sources=%d docs_in_sources=%d docs_with_text=%d docs_in_prompt=%d text_fields=%s",
+        len(sources),
+        docs_in_sources,
+        docs_with_text,
+        docs_in_prompt,
+        dict(text_field_usage),
+    )
+    if source_preview:
+        log.info("RAG context preview: %s", source_preview)
+
     if not context_string:
         return messages
 
@@ -1718,6 +1858,7 @@ async def chat_completion_files_handler(
         # Check if all files are in full context mode
         all_full_context = all(item.get("context") == "full" for item in files)
 
+        user_message = get_last_user_message(body["messages"])
         queries = []
         if not all_full_context:
             try:
@@ -1746,6 +1887,7 @@ async def chat_completion_files_handler(
                     queries_response = {"queries": [queries_response]}
 
                 queries = queries_response.get("queries", [])
+                queries = _normalize_generated_retrieval_queries(queries, user_message)
             except:
                 pass
 
@@ -1761,7 +1903,7 @@ async def chat_completion_files_handler(
             )
 
         if len(queries) == 0:
-            queries = [get_last_user_message(body["messages"])]
+            queries = _normalize_generated_retrieval_queries([], user_message)
 
         try:
             # Directly await async get_sources_from_items (no thread needed - fully async now)
@@ -1796,6 +1938,7 @@ async def chat_completion_files_handler(
         log.debug(f"rag_contexts:sources: {sources}")
 
         unique_ids = set()
+        unique_counter = 0
         for source in sources or []:
             if not source or len(source.keys()) == 0:
                 continue
@@ -1804,14 +1947,16 @@ async def chat_completion_files_handler(
             metadatas = source.get("metadata") or []
             src_info = source.get("source") or {}
 
-            for index, _ in enumerate(documents):
+            for index, document in enumerate(documents):
                 metadata = metadatas[index] if index < len(metadatas) else None
-                _id = (
-                    (metadata or {}).get("source")
-                    or (src_info or {}).get("id")
-                    or "N/A"
+                _id = _get_source_count_key(
+                    metadata=metadata,
+                    source_info=src_info,
+                    document=document,
+                    index=unique_counter,
                 )
                 unique_ids.add(_id)
+                unique_counter += 1
 
         sources_count = len(unique_ids)
         await __event_emitter__(

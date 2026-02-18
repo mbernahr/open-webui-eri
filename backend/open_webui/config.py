@@ -2768,6 +2768,11 @@ BYPASS_EMBEDDING_AND_RETRIEVAL = PersistentConfig(
 RAG_TOP_K = PersistentConfig(
     "RAG_TOP_K", "rag.top_k", int(os.environ.get("RAG_TOP_K", "3"))
 )
+RAG_ERI_TOP_K = PersistentConfig(
+    "RAG_ERI_TOP_K",
+    "rag.eri_top_k",
+    int(os.environ.get("RAG_ERI_TOP_K", "0")),
+)
 RAG_TOP_K_RERANKER = PersistentConfig(
     "RAG_TOP_K_RERANKER",
     "rag.top_k_reranker",

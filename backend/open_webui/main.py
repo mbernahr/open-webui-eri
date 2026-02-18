@@ -241,6 +241,7 @@ from open_webui.config import (
     RAG_EMBEDDING_BATCH_SIZE,
     ENABLE_ASYNC_EMBEDDING,
     RAG_TOP_K,
+    RAG_ERI_TOP_K,
     RAG_TOP_K_RERANKER,
     RAG_RELEVANCE_THRESHOLD,
     RAG_HYBRID_BM25_WEIGHT,
@@ -913,6 +914,7 @@ app.state.FUNCTION_CONTENTS = {}
 
 
 app.state.config.TOP_K = RAG_TOP_K
+app.state.config.ERI_TOP_K = RAG_ERI_TOP_K
 app.state.config.TOP_K_RERANKER = RAG_TOP_K_RERANKER
 app.state.config.RELEVANCE_THRESHOLD = RAG_RELEVANCE_THRESHOLD
 app.state.config.HYBRID_BM25_WEIGHT = RAG_HYBRID_BM25_WEIGHT

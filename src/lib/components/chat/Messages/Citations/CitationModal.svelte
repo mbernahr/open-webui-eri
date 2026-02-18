@@ -5,6 +5,7 @@
 	import Markdown from '$lib/components/chat/Messages/Markdown.svelte';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { settings } from '$lib/stores';
+	import { getSourceUrl } from '$lib/utils/sources';
 
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
@@ -63,16 +64,27 @@
 		}
 	};
 
+	const getSourceTitle = (source: any, sourceUrl: string | null = null) => {
+		const sourceName = source?.name;
+		if (typeof sourceName === 'string' && sourceName.trim().length > 0) {
+			return decodeString(sourceName);
+		}
+
+		if (sourceUrl) {
+			return decodeString(sourceUrl);
+		}
+
+		return $i18n.t('Citation');
+	};
+
 	const getTextFragmentUrl = (doc: any): string | null => {
 		const { metadata, source, document: content } = doc ?? {};
 		const { file_id, page } = metadata ?? {};
-		const sourceUrl = source?.url;
+		const sourceUrl = getSourceUrl(source);
 
 		const baseUrl = file_id
 			? `${WEBUI_API_BASE_URL}/files/${file_id}/content${page !== undefined ? `#page=${page + 1}` : ''}`
-			: sourceUrl?.includes('http')
-				? sourceUrl
-				: null;
+			: sourceUrl;
 
 		if (!baseUrl || !content) return baseUrl;
 
@@ -95,37 +107,35 @@
 </script>
 
 <Modal size="lg" bind:show>
+	{@const headerDocument = mergedDocuments?.[0]}
+	{@const headerSourceUrl = getSourceUrl(headerDocument?.source)}
 	<div>
 		<div class=" flex justify-between dark:text-gray-300 px-4.5 pt-3 pb-2">
 			<div class=" text-lg font-medium self-center flex items-center">
-				{#if citation?.source?.name}
-					{@const document = mergedDocuments?.[0]}
-					{#if document?.metadata?.file_id || document.source?.url?.includes('http')}
-						<Tooltip
-							className="w-fit"
-							content={document.source?.url?.includes('http')
-								? $i18n.t('Open link')
-								: $i18n.t('Open file')}
-							placement="top-start"
-							tippyOptions={{ duration: [500, 0] }}
+				{#if headerDocument?.metadata?.file_id || headerSourceUrl}
+					<Tooltip
+						className="w-fit"
+						content={headerSourceUrl
+							? $i18n.t('Open link')
+							: $i18n.t('Open file')}
+						placement="top-start"
+						tippyOptions={{ duration: [500, 0] }}
+					>
+						<a
+							class="hover:text-gray-500 dark:hover:text-gray-100 underline grow line-clamp-1"
+							href={headerDocument?.metadata?.file_id
+								? `${WEBUI_API_BASE_URL}/files/${headerDocument?.metadata?.file_id}/content${headerDocument?.metadata?.page !== undefined ? `#page=${headerDocument.metadata.page + 1}` : ''}`
+								: headerSourceUrl
+									? headerSourceUrl
+									: `#`}
+							target="_blank"
+							rel="noopener noreferrer"
 						>
-							<a
-								class="hover:text-gray-500 dark:hover:text-gray-100 underline grow line-clamp-1"
-								href={document?.metadata?.file_id
-									? `${WEBUI_API_BASE_URL}/files/${document?.metadata?.file_id}/content${document?.metadata?.page !== undefined ? `#page=${document.metadata.page + 1}` : ''}`
-									: document.source?.url?.includes('http')
-										? document.source.url
-										: `#`}
-								target="_blank"
-							>
-								{decodeString(citation?.source?.name)}
-							</a>
-						</Tooltip>
-					{:else}
-						{decodeString(citation?.source?.name)}
-					{/if}
+							{getSourceTitle(citation?.source, headerSourceUrl)}
+						</a>
+					</Tooltip>
 				{:else}
-					{$i18n.t('Citation')}
+					{getSourceTitle(citation?.source, headerSourceUrl)}
 				{/if}
 			</div>
 			<button
@@ -143,6 +153,14 @@
 				class="flex flex-col w-full dark:text-gray-200 overflow-y-scroll max-h-[22rem] scrollbar-thin gap-1"
 			>
 				{#each mergedDocuments as document, documentIdx}
+					{@const sourceUrl = getSourceUrl(document?.source)}
+					{@const snippetUrl = sourceUrl ? getTextFragmentUrl(document) : null}
+					{@const percentage = calculatePercentage(document.distance)}
+					{@const rawContent = (document.document ?? '').trim().replace(/\n\n+/g, '\n\n')}
+					{@const isTruncated =
+						($settings?.renderMarkdownInPreviews ?? true) &&
+						rawContent.length > CONTENT_PREVIEW_LIMIT &&
+						!expandedDocs.has(documentIdx)}
 					<div class="flex flex-col w-full gap-2">
 						{#if document.metadata?.parameters}
 							<div>
@@ -159,12 +177,12 @@
 							<div
 								class=" text-sm font-medium dark:text-gray-300 flex items-center gap-2 w-fit mb-1"
 							>
-								{#if document.source?.url?.includes('http')}
-									{@const snippetUrl = getTextFragmentUrl(document)}
+								{#if sourceUrl}
 									{#if snippetUrl}
 										<a
 											href={snippetUrl}
 											target="_blank"
+											rel="noopener noreferrer"
 											class="underline hover:text-gray-500 dark:hover:text-gray-100"
 											>{$i18n.t('Content')}</a
 										>
@@ -184,8 +202,6 @@
 									>
 										<div class="text-sm my-1 dark:text-gray-400 flex items-center gap-2 w-fit">
 											{#if showPercentage}
-												{@const percentage = calculatePercentage(document.distance)}
-
 												{#if typeof percentage === 'number'}
 													<span
 														class={`px-1 rounded-sm font-medium ${getRelevanceColor(percentage)}`}
@@ -221,11 +237,6 @@
 									title={$i18n.t('Content')}
 								></iframe>
 							{:else}
-								{@const rawContent = document.document.trim().replace(/\n\n+/g, '\n\n')}
-								{@const isTruncated =
-									($settings?.renderMarkdownInPreviews ?? true) &&
-									rawContent.length > CONTENT_PREVIEW_LIMIT &&
-									!expandedDocs.has(documentIdx)}
 								{#if $settings?.renderMarkdownInPreviews ?? true}
 									<div class="text-sm prose dark:prose-invert max-w-full">
 										<Markdown

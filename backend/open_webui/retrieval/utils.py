@@ -54,6 +54,11 @@ from open_webui.config import (
 
 log = logging.getLogger(__name__)
 
+try:
+    ERI_RAG_TOP_K = int(os.environ.get("ERI_RAG_TOP_K", "0"))
+except (TypeError, ValueError):
+    ERI_RAG_TOP_K = 0
+
 
 from typing import Any
 
@@ -965,6 +970,57 @@ async def get_sources_from_items(
     extracted_collections = []
     query_results = []
 
+    eri_top_k = getattr(request.app.state.config, "ERI_TOP_K", ERI_RAG_TOP_K)
+    try:
+        eri_k = int(eri_top_k)
+    except (TypeError, ValueError):
+        eri_k = ERI_RAG_TOP_K
+
+    eri_k = eri_k if eri_k >= 0 else 0
+    eri_lookup_cache: dict[str, bool] = {}
+
+    def is_eri_key(value: object) -> bool:
+        if not isinstance(value, str) or not value:
+            return False
+
+        cached = eri_lookup_cache.get(value)
+        if cached is None:
+            cached = is_eri_collection(value)
+            eri_lookup_cache[value] = cached
+        return cached
+
+    def resolve_eri_key(item: dict, candidate_key: object) -> Optional[str]:
+        keys: list[str] = []
+
+        if isinstance(candidate_key, str) and candidate_key:
+            keys.append(candidate_key)
+
+        for field_name in ("id", "collection_name"):
+            field_value = item.get(field_name)
+            if isinstance(field_value, str) and field_value:
+                keys.append(field_value)
+
+        collection_names = item.get("collection_names")
+        if isinstance(collection_names, list):
+            keys.extend(
+                [
+                    collection_name
+                    for collection_name in collection_names
+                    if isinstance(collection_name, str) and collection_name
+                ]
+            )
+
+        for key in keys:
+            if is_eri_key(key):
+                return key
+
+        if (item.get("data") or {}).get("data_source") == "eri":
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id:
+                return item_id
+
+        return None
+
     for item in items:
         query_result = None
         collection_names = []
@@ -1140,10 +1196,10 @@ async def get_sources_from_items(
                                     queries[0] if queries else "overview / context"
                                 )
                                 log.debug(
-                                    f"Calling ERI for full context: {item['id'], eri_query, k}"
+                                    f"Calling ERI for full context: {item['id'], eri_query, eri_k}"
                                 )
                                 eri_ctx = await query_eri_if_applicable(
-                                    item["id"], eri_query, k
+                                    item["id"], eri_query, eri_k
                                 )
                                 if eri_ctx:
                                     query_result = eri_ctx
@@ -1217,18 +1273,21 @@ async def get_sources_from_items(
                 # This keeps ERI working even when hybrid search is enabled globally.
                 if query_result is None and len(collection_names) == 1 and queries:
                     key = list(collection_names)[0]
-                    if is_eri_collection(key):
+                    eri_key = resolve_eri_key(item, key)
+                    if eri_key:
                         try:
                             log.debug(
-                                f"Calling ERI retrieval: {key} with query '{queries[0]}'"
+                                f"Calling ERI retrieval: {eri_key} with query '{queries[0]}'"
                             )
-                            eri_ctx = await query_eri_if_applicable(key, queries[0], k)
+                            eri_ctx = await query_eri_if_applicable(
+                                eri_key, queries[0], eri_k
+                            )
                             if eri_ctx:
                                 query_result = eri_ctx
-                                log.debug(f"ERI retrieval successful for {key}")
+                                log.debug(f"ERI retrieval successful for {eri_key}")
                         except Exception as e:
                             log.error(
-                                f"ERI retrieval failed for {key}: {e}",
+                                f"ERI retrieval failed for {eri_key}: {e}",
                                 exc_info=True,
                             )
                             query_result = None
@@ -1260,28 +1319,29 @@ async def get_sources_from_items(
                         try:
                             if len(collection_names) == 1 and queries:
                                 key = list(collection_names)[0]
-                                kb_is_eri = is_eri_collection(key)
+                                eri_key = resolve_eri_key(item, key)
+                                kb_is_eri = eri_key is not None
 
                                 if kb_is_eri:
                                     log.debug(
-                                        f"Calling ERI for standard retrieval: {key} with query '{queries[0]}'"
+                                        f"Calling ERI for standard retrieval: {eri_key} with query '{queries[0]}'"
                                     )
                                     try:
                                         eri_ctx = await query_eri_if_applicable(
-                                            key, queries[0], k
+                                            eri_key, queries[0], eri_k
                                         )
                                         if eri_ctx:
                                             query_result = eri_ctx
                                             log.debug(
-                                                f"ERI standard retrieval successful for {key}"
+                                                f"ERI standard retrieval successful for {eri_key}"
                                             )
                                         else:
                                             log.debug(
-                                                f"ERI standard retrieval returned no data for {key}"
+                                                f"ERI standard retrieval returned no data for {eri_key}"
                                             )
                                     except Exception as e:
                                         log.error(
-                                            f"ERI standard retrieval failed for {key}: {e}",
+                                            f"ERI standard retrieval failed for {eri_key}: {e}",
                                             exc_info=True,
                                         )
                                         query_result = None
@@ -1295,7 +1355,7 @@ async def get_sources_from_items(
                     # --------------------------
                     if not hybrid_search and query_result is None:
                         local_collection_names = [
-                            cn for cn in collection_names if not is_eri_collection(cn)
+                            cn for cn in collection_names if not is_eri_key(cn)
                         ]
                         if local_collection_names:
                             log.debug(

@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
 	import { embed, showControls, showEmbeds } from '$lib/stores';
+	import { getSourceUrl } from '$lib/utils/sources';
 
 	import CitationModal from './Citations/CitationModal.svelte';
+	import CitationsModal from './Citations/CitationsModal.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -16,12 +18,12 @@
 	let showPercentage = false;
 	let showRelevance = true;
 
-	let citationModal = null;
-
-	let showCitations = false;
+	let showCitationsModal = false;
 	let showCitationModal = false;
 
 	let selectedCitation: any = null;
+
+	const HTTP_URL_RE = /^https?:\/\//i;
 
 	export const showSourceModal = (sourceId) => {
 		let index;
@@ -39,8 +41,6 @@
 		}
 
 		if (citations[index]) {
-			console.log('Showing citation modal for:', citations[index]);
-
 			if (citations[index]?.source?.embed_url) {
 				const embedUrl = citations[index].source.embed_url;
 				if (embedUrl) {
@@ -95,7 +95,67 @@
 		return distances.every((d) => d !== undefined && d >= -1 && d <= 1);
 	}
 
+	const getNonEmptySourceValue = (...values: unknown[]): string | null => {
+		const placeholders = new Set(['', 'n/a', 'na', 'none', 'null', 'unknown']);
+		for (const value of values) {
+			if (value === null || value === undefined) continue;
+			const normalized =
+				typeof value === 'string' ? value.trim() : String(value).trim();
+			if (normalized.length > 0 && !placeholders.has(normalized.toLowerCase())) {
+				return normalized;
+			}
+		}
+		return null;
+	};
+
+	const hashDocument = (document: string): string => {
+		let hash = 0;
+		for (let i = 0; i < document.length; i++) {
+			hash = (hash << 5) - hash + document.charCodeAt(i);
+			hash |= 0;
+		}
+		return Math.abs(hash).toString(36);
+	};
+
+	const getCitationIdentity = (
+		metadata: Record<string, unknown> | undefined,
+		source: Record<string, unknown> | undefined,
+		document: unknown,
+		fallbackIndex: number
+	): string => {
+		const sourceLinks = Array.isArray(source?.links) ? source.links : [];
+		const key =
+			getNonEmptySourceValue(
+				metadata?.source,
+				metadata?.path,
+				metadata?.url,
+				metadata?.filename,
+				metadata?.name,
+				metadata?.file_id,
+				metadata?.id
+			) ??
+			getNonEmptySourceValue(
+				sourceLinks[0],
+				source?.path,
+				source?.url,
+				source?.id,
+				source?.filename,
+				source?.name
+			);
+
+		if (key) {
+			return key;
+		}
+
+		if (typeof document === 'string' && document.trim().length > 0) {
+			return `doc:${hashDocument(document.trim())}`;
+		}
+
+		return `source:${fallbackIndex}`;
+	};
+
 	$: {
+		let fallbackIndex = 0;
 		citations = sources.reduce((acc, source) => {
 			if (Object.keys(source).length === 0) {
 				return acc;
@@ -106,16 +166,33 @@
 				const distance = source?.distances?.[index];
 
 				// Within the same citation there could be multiple documents
-				const id = metadata?.source ?? source?.source?.id ?? 'N/A';
+				const id = getCitationIdentity(metadata, source?.source, document, fallbackIndex);
 				let _source = source?.source;
 
 				if (metadata?.name) {
 					_source = { ..._source, name: metadata.name };
 				}
 
-				if (id.startsWith('http://') || id.startsWith('https://')) {
-					_source = { ..._source, name: id, url: id };
+				const metadataLinks = Array.isArray(metadata?.links)
+					? metadata.links.filter((link: unknown) => typeof link === 'string')
+					: [];
+				if (metadataLinks.length > 0) {
+					_source = { ..._source, links: _source?.links ?? metadataLinks };
 				}
+
+				const metadataUrl = getNonEmptySourceValue(metadata?.source, metadata?.path, metadata?.url);
+				if (metadataUrl && HTTP_URL_RE.test(metadataUrl)) {
+					_source = {
+						..._source,
+						path: _source?.path ?? metadata?.path ?? metadata?.source,
+						url: _source?.url ?? metadataUrl
+					};
+				}
+
+				if (HTTP_URL_RE.test(id)) {
+					_source = { ..._source, name: _source?.name ?? id, url: _source?.url ?? id };
+				}
+				const sourceUrl = getSourceUrl(_source);
 
 				const existingSource = acc.find((item) => item.id === id);
 
@@ -123,58 +200,73 @@
 					existingSource.document.push(document);
 					existingSource.metadata.push(metadata);
 					if (distance !== undefined) existingSource.distances.push(distance);
+					if (!existingSource.sourceUrl && sourceUrl) {
+						existingSource.sourceUrl = sourceUrl;
+					}
 				} else {
 					acc.push({
 						id: id,
 						source: _source,
+						sourceUrl,
 						document: [document],
 						metadata: metadata ? [metadata] : [],
 						distances: distance !== undefined ? [distance] : []
 					});
 				}
+				fallbackIndex += 1;
 			});
 
 			return acc;
 		}, []);
-		console.log('citations', citations);
+			showRelevance = calculateShowRelevance(citations);
+			showPercentage = shouldShowPercentage(citations);
+		}
 
-		showRelevance = calculateShowRelevance(citations);
-		showPercentage = shouldShowPercentage(citations);
-	}
+	const getSourceDomain = (url: string | null): string | null => {
+		if (!url) return null;
 
-	const decodeString = (str: string) => {
 		try {
-			return decodeURIComponent(str);
-		} catch (e) {
-			return str;
+			return new URL(url).hostname;
+		} catch {
+			return null;
 		}
 	};
 </script>
 
-<CitationModal
-	bind:show={showCitationModal}
-	citation={selectedCitation}
-	{showPercentage}
-	{showRelevance}
-/>
+	<CitationModal
+		bind:show={showCitationModal}
+		citation={selectedCitation}
+		{showPercentage}
+		{showRelevance}
+	/>
+	<CitationsModal
+		id={id}
+		bind:show={showCitationsModal}
+		{citations}
+		{showPercentage}
+		{showRelevance}
+	/>
 
 {#if citations.length > 0}
-	{@const urlCitations = citations.filter((c) => c?.source?.name?.startsWith('http'))}
+	{@const urlCitations = citations.filter((c) => c?.sourceUrl)}
 	<div class=" py-1 -mx-0.5 w-full flex gap-1 items-center flex-wrap">
-		<button
-			class="text-xs font-medium text-gray-600 dark:text-gray-300 px-3.5 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition flex items-center gap-1 border border-gray-50 dark:border-gray-850/30"
-			on:click={() => {
-				showCitations = !showCitations;
-			}}
-		>
+			<button
+				class="text-xs font-medium text-gray-600 dark:text-gray-300 px-3.5 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition flex items-center gap-1 border border-gray-50 dark:border-gray-850/30"
+				on:click={() => {
+					showCitationsModal = true;
+				}}
+			>
 			{#if urlCitations.length > 0}
 				<div class="flex -space-x-1 items-center">
-					{#each urlCitations.slice(0, 3) as citation, idx}
-						<img
-							src="https://www.google.com/s2/favicons?sz=32&domain={citation.source.name}"
-							alt="favicon"
-							class="size-4 rounded-full shrink-0 border border-white dark:border-gray-850 bg-white dark:bg-gray-900"
-						/>
+					{#each urlCitations.slice(0, 3) as citation}
+						{@const sourceDomain = getSourceDomain(citation?.sourceUrl)}
+						{#if sourceDomain}
+							<img
+								src="https://www.google.com/s2/favicons?sz=32&domain={sourceDomain}"
+								alt="favicon"
+								class="size-4 rounded-full shrink-0 border border-white dark:border-gray-850 bg-white dark:bg-gray-900"
+							/>
+						{/if}
 					{/each}
 				</div>
 			{/if}
@@ -187,32 +279,6 @@
 					})}
 				{/if}
 			</div>
-		</button>
-	</div>
-{/if}
-
-{#if showCitations}
-	<div class="py-1.5">
-		<div class="text-xs gap-2 flex flex-col">
-			{#each citations as citation, idx}
-				<button
-					id={`source-${id}-${idx + 1}`}
-					class="no-toggle outline-hidden flex dark:text-gray-300 bg-transparent text-gray-600 rounded-xl gap-1.5 items-center"
-					on:click={() => {
-						showCitationModal = true;
-						selectedCitation = citation;
-					}}
-				>
-					<div class=" font-medium bg-gray-50 dark:bg-gray-850 rounded-md px-1">
-						{idx + 1}
-					</div>
-					<div
-						class="flex-1 truncate hover:text-black dark:text-white/60 dark:hover:text-white transition text-left"
-					>
-						{decodeString(citation.source.name)}
-					</div>
-				</button>
-			{/each}
+			</button>
 		</div>
-	</div>
-{/if}
+	{/if}

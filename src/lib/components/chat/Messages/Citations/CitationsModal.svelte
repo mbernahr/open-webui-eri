@@ -6,6 +6,7 @@
 	import Modal from '$lib/components/common/Modal.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import CitationModal from './CitationModal.svelte';
+	import { getSourceUrl } from '$lib/utils/sources';
 
 	export let id = '';
 	export let show = false;
@@ -27,6 +28,19 @@
 		} catch (e) {
 			return str;
 		}
+	};
+
+	const getCitationTitle = (citation: any, sourceUrl: string | null) => {
+		const sourceName = citation?.source?.name;
+		if (typeof sourceName === 'string' && sourceName.trim().length > 0) {
+			return decodeString(sourceName);
+		}
+
+		if (sourceUrl) {
+			return decodeString(sourceUrl);
+		}
+
+		return $i18n.t('Source');
 	};
 </script>
 
@@ -58,23 +72,42 @@
 				class="flex flex-col w-full dark:text-gray-200 overflow-y-scroll max-h-[22rem] scrollbar-hidden text-left text-sm gap-2"
 			>
 				{#each citations as citation, idx}
-					<button
+					{@const sourceUrl = citation?.sourceUrl ?? getSourceUrl(citation?.source)}
+					<div
 						id={`source-${id}-${idx + 1}`}
 						class="no-toggle outline-hidden flex dark:text-gray-300 bg-white dark:bg-gray-900 rounded-xl gap-1.5 items-center"
-						on:click={() => {
-							showCitationModal = true;
-							selectedCitation = citation;
-						}}
 					>
-						<div class=" font-medium">
-							{idx + 1}.
-						</div>
-						<div
-							class="flex-1 truncate text-black/60 hover:text-black dark:text-white/60 dark:hover:text-white transition text-left"
+						<button
+							class="font-medium"
+							on:click={() => {
+								showCitationModal = true;
+								selectedCitation = citation;
+							}}
 						>
-							{decodeString(citation.source.name)}
-						</div>
-					</button>
+							{idx + 1}.
+						</button>
+
+						{#if sourceUrl}
+							<a
+								href={sourceUrl}
+								target="_blank"
+								rel="noopener noreferrer"
+								class="flex-1 truncate text-black/60 hover:text-black dark:text-white/60 dark:hover:text-white transition text-left"
+							>
+								{getCitationTitle(citation, sourceUrl)}
+							</a>
+						{:else}
+							<button
+								class="flex-1 truncate text-black/60 hover:text-black dark:text-white/60 dark:hover:text-white transition text-left"
+								on:click={() => {
+									showCitationModal = true;
+									selectedCitation = citation;
+								}}
+							>
+								{getCitationTitle(citation, sourceUrl)}
+							</button>
+						{/if}
+					</div>
 				{/each}
 			</div>
 		</div>

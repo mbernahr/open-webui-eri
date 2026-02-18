@@ -6,8 +6,11 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import uuid
+import re
+from collections import Counter
 from typing import Any, Optional
 
 import httpx
@@ -21,6 +24,108 @@ from pydantic import BaseModel, Field
 CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
 
 log = logging.getLogger(__name__)
+HTTP_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _basename_without_ext(value: str) -> str:
+    try:
+        candidate = os.path.basename(value.strip())
+        if not candidate:
+            return ""
+        stem, _ = os.path.splitext(candidate)
+        return (stem or candidate).strip()
+    except Exception:
+        return ""
+
+
+def _normalize_hit_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+
+    if isinstance(value, dict):
+        for key in (
+            "matchedContent",
+            "matched_content",
+            "content",
+            "text",
+            "snippet",
+            "page_content",
+            "document",
+        ):
+            nested = _normalize_hit_text(value.get(key))
+            if nested:
+                return nested
+        return ""
+
+    if isinstance(value, list):
+        parts = [_normalize_hit_text(item) for item in value]
+        parts = [part for part in parts if part]
+        return "\n\n".join(parts)
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def _extract_hit_text(hit: dict) -> tuple[str, str]:
+    for field in (
+        "matchedContent",
+        "matched_content",
+        "content",
+        "text",
+        "snippet",
+        "page_content",
+        "document",
+    ):
+        normalized = _normalize_hit_text(hit.get(field))
+        if normalized:
+            return normalized, field
+
+    surrounding = _normalize_hit_text(hit.get("surroundingContent"))
+    if surrounding:
+        return surrounding, "surroundingContent"
+
+    return "", "empty"
+
+
+def _metadata_fallback_text(hit: dict) -> str:
+    parts: list[str] = []
+
+    routine_id = hit.get("routine_id")
+    if isinstance(routine_id, str) and routine_id.strip():
+        parts.append(f"Routine ID: {routine_id.strip()}")
+
+    for key in ("name", "title", "filename", "path", "source", "category", "type"):
+        value = hit.get(key)
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                if key in ("filename", "path", "source"):
+                    label = key.capitalize()
+                    parts.append(f"{label}: {normalized}")
+                    basename = _basename_without_ext(normalized)
+                    if basename and basename != normalized:
+                        parts.append(f"Document: {basename}")
+                else:
+                    parts.append(f"{key.capitalize()}: {normalized}")
+
+    links = hit.get("links")
+    if isinstance(links, list):
+        for link in links:
+            if isinstance(link, str) and link.strip():
+                parts.append(f"Link: {link.strip()}")
+                break
+
+    # Keep it compact but informative enough for prompt usage.
+    deduped: list[str] = []
+    seen = set()
+    for part in parts:
+        if part not in seen:
+            seen.add(part)
+            deduped.append(part)
+
+    return "\n".join(deduped).strip()
 
 
 class EriConfig(BaseModel):
@@ -249,23 +354,85 @@ async def query_eri_if_applicable(collection_key: str, query: str, k: int):
         )
 
     limit = int(k) if isinstance(k, int) else 0
-    hits = raw_hits if limit <= 0 else raw_hits[:limit]
+    # Do not apply an additional local hard cap here.
+    # The ERI backend already receives `maxMatches` and should be the single source of truth.
+    hits = raw_hits
 
     display_name = (
         getattr(kb, "name", None) or getattr(kb, "collection_name", None) or "Knowledge"
     )
 
-    docs = [h.get("matchedContent", "") for h in hits]
-    metas = [
-        {
-            "source": h.get("source") or h.get("name"),
-            "category": h.get("category"),
-            "type": h.get("type"),
-            "source_name": display_name,
-            "collection_name": display_name,
-        }
-        for h in hits
-    ]
+    docs: list[str] = []
+    text_field_usage = Counter()
+    metas = []
+    fallback_texts = 0
+    for hit in hits:
+        doc_text, text_field = _extract_hit_text(hit)
+        if not doc_text:
+            doc_text = _metadata_fallback_text(hit)
+            if doc_text:
+                text_field = "metadata_fallback"
+                fallback_texts += 1
+        docs.append(doc_text)
+        text_field_usage[text_field] += 1
+
+        source_value = hit.get("source") or hit.get("path") or hit.get("name")
+        path_value = hit.get("path") or source_value
+
+        links_value = hit.get("links")
+        if not isinstance(links_value, list):
+            links_value = []
+
+        if (
+            isinstance(source_value, str)
+            and HTTP_URL_RE.match(source_value)
+            and source_value not in links_value
+        ):
+            links_value = [source_value, *links_value]
+
+        metas.append(
+            {
+                "source": source_value,
+                "path": path_value,
+                "links": links_value,
+                "filename": hit.get("filename"),
+                "name": hit.get("name"),
+                "category": hit.get("category"),
+                "type": hit.get("type"),
+                "_text_field": text_field,
+                "source_name": display_name,
+                "collection_name": display_name,
+            }
+        )
+
+    preview = []
+    for idx, hit in enumerate(hits[:5]):
+        links = hit.get("links")
+        first_link = links[0] if isinstance(links, list) and links else None
+        preview.append(
+            {
+                "name": hit.get("name"),
+                "path": hit.get("path"),
+                "source": hit.get("source"),
+                "link": first_link,
+                "text_field": metas[idx].get("_text_field") if idx < len(metas) else "empty",
+                "text_len": len(docs[idx]) if idx < len(docs) else 0,
+            }
+        )
+
+    log.info(
+        "ERI trace: key=%s query=%s requested_limit=%d raw_hits=%d used_hits=%d non_empty_texts=%d fallback_texts=%d text_fields=%s",
+        collection_key,
+        query[:200],
+        limit,
+        len(raw_hits),
+        len(hits),
+        sum(1 for doc in docs if doc.strip()),
+        fallback_texts,
+        dict(text_field_usage),
+    )
+    if preview:
+        log.info("ERI trace preview: %s", preview)
 
     return {
         "ids": [[str(uuid.uuid4()) for _ in hits]],
